@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "scouter": {
+      "command": "java",
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp/build/libs/scouter-mcp-0.1.0-all.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "your-collector-host",
+        "SCOUTER_COLLECTOR_PORT": "6100",
+        "SCOUTER_USER": "your-user",
+        "SCOUTER_PASSWORD": "your-password",
+        "SCOUTER_TZ": "Asia/Seoul"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+scouter-mcp
+Copyright 2026
+
+이 프로젝트는 다음의 서드파티 코드를 포함한다.
+
+------------------------------------------------------------------------
+Scouter (https://github.com/scouter-project/scouter)
+Licensed under the Apache License, Version 2.0.
+------------------------------------------------------------------------
+
+`scouter.mcp.client` 패키지의 일부 클라이언트 코드(collector TCP 접속/로그인/
+세션 관리 등)는 Scouter v2.20.0의 scouter.webapp net/server 클래스를 포팅한
+것이다. 원본은 Apache License 2.0 하에 배포된다.
+
+Apache License 2.0 전문: http://www.apache.org/licenses/LICENSE-2.0

@@ -1,6 +1,7 @@
 plugins {
     java
     application
+    id("com.gradleup.shadow") version "8.3.0"
 }
 
 group = "scouter.mcp"
@@ -36,6 +37,8 @@ dependencies {
 
 application {
     mainClass.set("scouter.mcp.McpMain")
+    // distribution/jar 실행 경로에서도 slf4j-simple 로그를 stderr로 라우팅한다(stdout은 JSON-RPC 전용)
+    applicationDefaultJvmArgs = listOf("-Dorg.slf4j.simpleLogger.logFile=System.err")
 }
 
 tasks.test {
@@ -46,4 +49,11 @@ tasks.test {
 tasks.named<JavaExec>("run") {
     systemProperty("org.slf4j.simpleLogger.logFile", "System.err")
     standardInput = System.`in`
+}
+
+// fat jar: build/libs/scouter-mcp-0.1.0-all.jar (Main-Class 매니페스트 포함)
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    manifest {
+        attributes["Main-Class"] = "scouter.mcp.McpMain"
+    }
 }
