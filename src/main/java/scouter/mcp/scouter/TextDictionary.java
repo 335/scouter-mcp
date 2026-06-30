@@ -86,12 +86,31 @@ public final class TextDictionary implements PackMapper.TextResolver {
                 }
             });
         } catch (Exception e) {
-            log.warn("text decode failed: type={}, yyyymmdd={}, hash={}, cause={}",
-                    type, yyyymmdd, hash, String.valueOf(e.getMessage()));
+            if (isEof(e)) {
+                // 해당 날짜에 텍스트가 없는 해시는 컬렉터가 빈 응답으로 끝맺어 EOF 로 나타난다.
+                // 정상적인 미발견 신호이므로 debug 로만 남기고 null 을 반환한다(상위에서 #hash 로 표기).
+                log.debug("text not found: type={}, yyyymmdd={}, hash={}", type, yyyymmdd, hash);
+            } else {
+                log.warn("text decode failed: type={}, yyyymmdd={}, hash={}, cause={}",
+                        type, yyyymmdd, hash, String.valueOf(e.getMessage()));
+            }
             return null;
         } finally {
             TcpProxy.close(tcp);
         }
         return holder[0];
+    }
+
+    // process() 가 reader 의 EOFException 을 RuntimeException 으로 감쌀 수 있어 원인 체인을 확인한다.
+    private static boolean isEof(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.io.EOFException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
     }
 }

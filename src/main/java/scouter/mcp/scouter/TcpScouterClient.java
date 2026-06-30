@@ -214,21 +214,39 @@ public final class TcpScouterClient implements ScouterClient {
 
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
-            MapPack txidParam = new MapPack();
-            txidParam.put(ParamConstant.DATE, yyyymmdd);
-            txidParam.put(ParamConstant.XLOG_TXID, txid);
-            Pack summaryPack = tcp.getSingle(RequestCmd.XLOG_READ_BY_TXID, txidParam);
-            if (summaryPack instanceof XLogPack xp) {
-                summary = PackMapper.toXLogRow(xp, config.zone(), dict);
+            // 요약 조회: 해당 txid 가 보관돼 있지 않으면 컬렉터가 빈 응답으로 끝맺어 EOF 로 나타난다.
+            // 이는 "없음" 신호이므로 summary=null 로 두고 진행한다(EOF 가 아닌 오류만 표면화).
+            try {
+                MapPack txidParam = new MapPack();
+                txidParam.put(ParamConstant.DATE, yyyymmdd);
+                txidParam.put(ParamConstant.XLOG_TXID, txid);
+                Pack summaryPack = tcp.getSingle(RequestCmd.XLOG_READ_BY_TXID, txidParam);
+                if (summaryPack instanceof XLogPack xp) {
+                    summary = PackMapper.toXLogRow(xp, config.zone(), dict);
+                }
+            } catch (Exception e) {
+                if (!isEof(e)) {
+                    throw e;
+                }
+                log.debug("xlog summary not found: txid={}, date={}", txid, yyyymmdd);
             }
 
-            MapPack profileParam = new MapPack();
-            profileParam.put(ParamConstant.DATE, yyyymmdd);
-            profileParam.put(ParamConstant.XLOG_TXID, txid);
-            profileParam.put(ParamConstant.PROFILE_MAX, MAX_PROFILE_BLOCK);
-            Pack profilePack = tcp.getSingle(RequestCmd.TRANX_PROFILE, profileParam);
-            if (profilePack instanceof XLogProfilePack pp && pp.profile != null) {
-                steps = Step.toObjects(pp.profile);
+            // 프로파일 조회: trivial/미보관 트랜잭션은 프로파일이 없어 EOF 로 나타난다.
+            // steps=null 로 두면 빈 상세가 반환된다(EOF 가 아닌 오류만 표면화).
+            try {
+                MapPack profileParam = new MapPack();
+                profileParam.put(ParamConstant.DATE, yyyymmdd);
+                profileParam.put(ParamConstant.XLOG_TXID, txid);
+                profileParam.put(ParamConstant.PROFILE_MAX, MAX_PROFILE_BLOCK);
+                Pack profilePack = tcp.getSingle(RequestCmd.TRANX_PROFILE, profileParam);
+                if (profilePack instanceof XLogProfilePack pp && pp.profile != null) {
+                    steps = Step.toObjects(pp.profile);
+                }
+            } catch (Exception e) {
+                if (!isEof(e)) {
+                    throw e;
+                }
+                log.debug("xlog profile not found: txid={}, date={}", txid, yyyymmdd);
             }
         } catch (Exception e) {
             throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()))
@@ -266,6 +284,20 @@ public final class TcpScouterClient implements ScouterClient {
         } finally {
             TcpProxy.close(tcp);
         }
+    }
+
+    // process()/getSingle() 가 reader 의 EOFException 을 RuntimeException 으로 감쌀 수 있어 원인 체인을 확인한다.
+    // EOF 는 컬렉터에 해당 데이터가 없을 때의 정상적인 "없음" 신호다(오류가 아님).
+    private static boolean isEof(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.io.EOFException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
     }
 
     private Map<Integer, String> buildObjNameMap() {
