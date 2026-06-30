@@ -38,6 +38,8 @@ import java.util.Map;
 @Slf4j
 public final class TcpScouterClient implements ScouterClient {
 
+    private static final int MAX_PROFILE_BLOCK = 10;
+
     private final Config config;
     private final Masker masker = new Masker();
     private Server server;
@@ -223,13 +225,13 @@ public final class TcpScouterClient implements ScouterClient {
             MapPack profileParam = new MapPack();
             profileParam.put(ParamConstant.DATE, yyyymmdd);
             profileParam.put(ParamConstant.XLOG_TXID, txid);
-            profileParam.put(ParamConstant.PROFILE_MAX, 10);
+            profileParam.put(ParamConstant.PROFILE_MAX, MAX_PROFILE_BLOCK);
             Pack profilePack = tcp.getSingle(RequestCmd.TRANX_PROFILE, profileParam);
             if (profilePack instanceof XLogProfilePack pp && pp.profile != null) {
                 steps = Step.toObjects(pp.profile);
             }
         } catch (Exception e) {
-            throw McpError.of(McpError.Code.SCOUTER_PROTOCOL_MISMATCH, String.valueOf(e.getMessage()))
+            throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()))
                     .withHint("txid", String.valueOf(txid))
                     .withHint("date", yyyymmdd);
         } finally {

@@ -36,17 +36,18 @@ class ProfileMaskingTest {
         assertThat(masked.get(1).elapsedMs()).isEqualTo(13);
     }
 
+    // 인라인 시크릿(바인드가 아닌 SQL 텍스트 내부 리터럴)이 든 SQL 1건.
+    private static final String INLINE_SECRET_SQL =
+            "SELECT * FROM member WHERE card_no = '1234567812345678' AND email = 'hong@example.com'";
+
     @Test
     void masksSqlTextWhenMaskSensitiveTrue() {
-        List<SqlStepDto> withInlineSecret = List.of(
-                new SqlStepDto(
-                        "SELECT * FROM member WHERE card_no = '1234567812345678'",
-                        List.of(),
-                        5));
+        List<SqlStepDto> withInlineSecret = List.of(new SqlStepDto(INLINE_SECRET_SQL, List.of(), 5));
 
         List<SqlStepDto> masked = PackMapper.maskSqls(withInlineSecret, true, MASKER);
 
         assertThat(masked.get(0).sql()).doesNotContain("1234567812345678");
+        assertThat(masked.get(0).sql()).doesNotContain("hong@example.com");
     }
 
     @Test
@@ -56,5 +57,15 @@ class ProfileMaskingTest {
         assertThat(String.join(",", raw.get(0).bindParams())).contains("1234567812345678");
         assertThat(String.join(",", raw.get(0).bindParams())).contains("hong@example.com");
         assertThat(raw.get(0).sql()).isEqualTo("SELECT * FROM member WHERE card_no = ? AND email = ?");
+    }
+
+    @Test
+    void keepsInlineSqlSecretsRawWhenMaskSensitiveFalse() {
+        List<SqlStepDto> withInlineSecret = List.of(new SqlStepDto(INLINE_SECRET_SQL, List.of(), 5));
+
+        List<SqlStepDto> raw = PackMapper.maskSqls(withInlineSecret, false, MASKER);
+
+        assertThat(raw.get(0).sql()).contains("1234567812345678");
+        assertThat(raw.get(0).sql()).contains("hong@example.com");
     }
 }
