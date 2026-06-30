@@ -1,5 +1,11 @@
 # Scouter MCP Implementation Plan
 
+> **상태: 구현 완료.** 코드가 최종 기준이다. 아래는 실행 중 발견된 계획서 정오(Errata):
+> - **Task 3(TimeRange):** 테스트 상수 `1782486000000L`은 오류(2일 어긋남)였고 실제값 `1782658800000L`(=`2026-06-29T00:00:00+09:00`)로 정정함. 프로덕션 로직은 불변.
+> - **Task 4(Masker):** 적용 순서는 `SECRET_KV → EMAIL → LONG_DIGITS → PHONE`이 맞다(계획의 PHONE→LONG_DIGITS는 오류 — `9001011234567` 같은 13자리 안에 전화번호 패턴이 잡혀 손상됨).
+> - **Task 11(get_xlog_detail):** `sqls[]`에 `rows?` 미포함. 조회 실패 에러코드는 `INTERNAL`(초안의 PROTOCOL_MISMATCH 대신).
+> - **공통:** 모든 도구 핸들러는 예외를 MCP tool-error(`isError=true`, `{code,message,hints}`)로 반환하고 `McpError.toLogLine()`으로 stderr 로깅한다. `txid`/`gxid` 입력 스키마는 64비트 정밀도 보존을 위해 `string`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** AI(MCP 클라이언트)가 Scouter Collector에 직접 TCP로 붙어 XLog/카운터/오브젝트를 조회하고, 결과에 상관키(txid/gxid/objName/epoch)를 실어 OpenSearch/Datadog 교차분석을 돕는 stdio MCP 서버를 만든다.

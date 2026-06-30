@@ -1,8 +1,13 @@
 # Scouter MCP 설계 (Design Spec)
 
 - 작성일: 2026-06-29
-- 상태: 설계 확정(구현 계획 전)
+- 상태: 구현 완료 (코드가 최종 기준)
 - 목적: Scouter APM의 XLog/지표를 AI(MCP)로 빠르게 탐색하고, OpenSearch/Datadog 로그와 교차 분석하여 오류 원인 파악을 가속한다.
+
+> **구현 반영 정정(Errata).** 아래는 구현 과정에서 확정된 설계 대비 차이다(코드가 최종 기준).
+> - §4.2 XLog row의 시각 필드는 `endTime(epochMs)` 단일 대신 `endTimeMillis`(epochMs) + `endTimeIso`(ISO, 교차검색용) 두 개로 제공한다.
+> - §4.3 `get_xlog_detail`의 `sqls[]`에 `rows?` 필드는 두지 않는다(상류 SqlStep에 신뢰 가능한 row count가 없어 제외).
+> - 시간 처리·민감정보 마스킹 등 순수 로직은 TDD로 검증됨. 도구 실행 실패는 MCP tool-error(`isError=true`)로 `{code, message, hints}`를 반환한다.
 
 ---
 
