@@ -21,6 +21,9 @@ dependencies {
     implementation("io.modelcontextprotocol.sdk:mcp")
     implementation("io.github.scouter-project:scouter-common:2.20.0")
     implementation("org.slf4j:slf4j-simple:2.0.13")
+    // 우리 Tools.java JSON 렌더링은 버전을 직접 통제하기 위해 Jackson 2.x를 명시적으로 사용한다.
+    // (mcp 번들은 tools.jackson 패키지의 Jackson 3을 노출하므로 그것에 의존하지 않는다)
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
 
     compileOnly("org.projectlombok:lombok:1.18.34")
     annotationProcessor("org.projectlombok:lombok:1.18.34")
