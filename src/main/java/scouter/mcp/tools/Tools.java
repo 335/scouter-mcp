@@ -1,7 +1,10 @@
 package scouter.mcp.tools;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import scouter.mcp.i18n.Messages;
+import scouter.mcp.policy.Limits;
+import scouter.mcp.scouter.PackMapper;
 import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
@@ -11,6 +14,7 @@ import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -19,7 +23,9 @@ import java.util.stream.Collectors;
 
 public final class Tools {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Omit null fields to save tokens (e.g. error=null on the vast majority of XLog rows).
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .setSerializationInclusion(JsonInclude.Include.NON_NULL);
 
     private Tools() {
     }
@@ -39,10 +45,28 @@ public final class Tools {
     public static String renderGetCounter(Locale locale, ScouterClient client, List<Integer> objHashes,
                                           String counter, long fromMillis, long toMillis) {
         List<CounterSeriesDto> series = client.getCounter(objHashes, counter, fromMillis, toMillis);
+        // Downsample each series to bound tokens; high-resolution counters can have tens of thousands of points.
+        // Summary stats (count/min/max/avg) are computed from the FULL series before downsampling.
+        List<Map<String, Object>> rendered = new ArrayList<>(series.size());
+        for (CounterSeriesDto s : series) {
+            PackMapper.SeriesStats st = PackMapper.stats(s.points());
+            List<PackMapper.Point> ds = PackMapper.downsample(s.points(), Limits.COUNTER_MAX_POINTS);
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("objHash", s.objHash());
+            m.put("count", st.count());
+            m.put("min", st.min());
+            m.put("max", st.max());
+            m.put("avg", st.avg());
+            if (ds != null && ds.size() < st.count()) {
+                m.put("downsampledTo", ds.size());
+            }
+            m.put("points", ds);
+            rendered.add(m);
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("counter", counter);
         result.put("count", series.size());
-        result.put("series", series);
+        result.put("series", rendered);
         if (series.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.counter_empty"));
         }

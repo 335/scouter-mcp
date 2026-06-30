@@ -242,6 +242,13 @@ class SmokeIT {
             int ypts = y.isEmpty() ? 0 : y.get(0).points().size();
             System.err.println("[smoke-day] yesterday-1h-only points=" + ypts
                     + " -> if 0 it's retention, not a split bug");
+            // Verify the TOOL output is bounded: renderGetCounter downsamples to <= COUNTER_MAX_POINTS and adds stats.
+            String json = scouter.mcp.tools.Tools.renderGetCounter(
+                    java.util.Locale.ENGLISH, client, List.of(objHash), "RecentUser", from, now);
+            int renderedPts = json.split("\"timeMillis\"", -1).length - 1;
+            System.err.println("[smoke-day] rendered jsonLen=" + json.length()
+                    + " renderedPoints=" + renderedPts + " hasDownsampledFlag=" + json.contains("downsampledTo")
+                    + " hasStats=" + (json.contains("\"avg\"") && json.contains("\"max\"")));
         }
     }
 

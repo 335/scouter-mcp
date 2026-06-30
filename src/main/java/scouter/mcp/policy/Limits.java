@@ -30,4 +30,10 @@ public final class Limits {
     public static final int COUNTER_MAX_OBJ = 20;
     /** Absolute maximum query window for counter time series (24 hours). */
     public static final long COUNTER_ABS_MAX_WINDOW_MS = 24L * 60 * 60 * 1000;
+    /**
+     * Max points returned per counter series. High-resolution counters can yield tens of thousands of
+     * points over a day; series exceeding this are bucket-averaged down (summary stats are computed
+     * from the full series) to bound LLM tokens.
+     */
+    public static final int COUNTER_MAX_POINTS = 360;
 }

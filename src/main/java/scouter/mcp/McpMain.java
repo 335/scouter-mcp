@@ -26,7 +26,8 @@ public final class McpMain {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(McpMain.class);
     private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
-            new com.fasterxml.jackson.databind.ObjectMapper();
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                    .setSerializationInclusion(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL);
 
     private McpMain() {
     }

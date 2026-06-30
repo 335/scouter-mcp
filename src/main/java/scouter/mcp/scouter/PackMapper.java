@@ -27,6 +27,56 @@ public final class PackMapper {
     public record Point(long timeMillis, double value) {
     }
 
+    /** Summary statistics for a counter series, computed from the full (pre-downsample) points. */
+    public record SeriesStats(int count, double min, double max, double avg, Double first, Double last) {
+    }
+
+    public static SeriesStats stats(List<Point> points) {
+        if (points == null || points.isEmpty()) {
+            return new SeriesStats(0, 0d, 0d, 0d, null, null);
+        }
+        double min = Double.POSITIVE_INFINITY;
+        double max = Double.NEGATIVE_INFINITY;
+        double sum = 0d;
+        for (Point p : points) {
+            min = Math.min(min, p.value());
+            max = Math.max(max, p.value());
+            sum += p.value();
+        }
+        return new SeriesStats(points.size(), min, max, sum / points.size(),
+                points.get(0).value(), points.get(points.size() - 1).value());
+    }
+
+    /**
+     * Bucket-average a series down to at most maxPoints. Returns the input unchanged when already small.
+     * Each output point uses the bucket's first timestamp and the mean of its values, preserving shape
+     * while bounding token usage for high-resolution counters.
+     */
+    public static List<Point> downsample(List<Point> points, int maxPoints) {
+        if (points == null || maxPoints <= 0 || points.size() <= maxPoints) {
+            return points;
+        }
+        List<Point> out = new ArrayList<>(maxPoints);
+        double bucket = (double) points.size() / maxPoints;
+        for (int i = 0; i < maxPoints; i++) {
+            int start = (int) Math.floor(i * bucket);
+            int end = (int) Math.floor((i + 1) * bucket);
+            if (start >= points.size()) {
+                break;
+            }
+            if (end <= start) {
+                end = start + 1;
+            }
+            end = Math.min(end, points.size());
+            double sum = 0d;
+            for (int j = start; j < end; j++) {
+                sum += points.get(j).value();
+            }
+            out.add(new Point(points.get(start).timeMillis(), sum / (end - start)));
+        }
+        return out;
+    }
+
     public static List<Point> toPoints(ListValue time, ListValue value) {
         List<Point> out = new ArrayList<>();
         if (time == null || value == null) {

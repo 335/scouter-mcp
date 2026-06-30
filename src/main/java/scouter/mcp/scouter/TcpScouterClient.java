@@ -406,15 +406,32 @@ public final class TcpScouterClient implements ScouterClient {
         return false;
     }
 
+    // objName is cosmetic (decoded object names); cache briefly to avoid an OBJECT_LIST round-trip per call.
+    private static final long OBJNAME_TTL_MS = 30_000L;
+    private volatile Map<Integer, String> objNameCache;
+    private volatile long objNameCacheAt;
+    // Counter definitions are effectively static at runtime; cache the engine for the session.
+    private volatile CounterEngine counterEngineCache;
+
     private Map<Integer, String> buildObjNameMap() {
+        Map<Integer, String> cached = objNameCache;
+        if (cached != null && System.currentTimeMillis() - objNameCacheAt < OBJNAME_TTL_MS) {
+            return cached;
+        }
         Map<Integer, String> map = new HashMap<>();
         for (SObjectDto o : listObjects()) {
             map.put(o.objHash(), o.objName());
         }
+        objNameCache = map;
+        objNameCacheAt = System.currentTimeMillis();
         return map;
     }
 
     private CounterEngine loadCounterEngine() {
+        CounterEngine cached = counterEngineCache;
+        if (cached != null) {
+            return cached;
+        }
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
             Pack p = tcp.getSingle(RequestCmd.GET_XML_COUNTER, new MapPack());
@@ -432,6 +449,7 @@ public final class TcpScouterClient implements ScouterClient {
             if (customXml != null && customXml.length > 0) {
                 engine.parse(customXml);
             }
+            counterEngineCache = engine;
             return engine;
         } finally {
             TcpProxy.close(tcp);
