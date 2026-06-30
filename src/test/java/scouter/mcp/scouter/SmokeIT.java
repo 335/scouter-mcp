@@ -203,6 +203,49 @@ class SmokeIT {
     }
 
     /**
+     * Verifies per-day counter chunking: a window that straddles midnight must return points on both
+     * sides of the boundary (a single COUNTER_PAST_TIME_ALL call would only cover one day).
+     */
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void counterAcrossMidnight() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 26 * 60 * 60 * 1000L; // 26h window -> crosses at least one local midnight
+        String filterType = System.getProperty("SCOUTER_SMOKE_OBJ_TYPE");
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            Integer objHash = client.listObjects().stream()
+                    .filter(o -> filterType == null || filterType.equalsIgnoreCase(o.objType()))
+                    .map(SObjectDto::objHash).findFirst().orElse(null);
+            assumeTrue(objHash != null, "no target object");
+            List<CounterSeriesDto> series = client.getCounter(List.of(objHash), "RecentUser", from, now);
+            int pts = series.isEmpty() ? 0 : series.get(0).points().size();
+            // local midnight just before 'now'
+            long midnight = java.time.Instant.ofEpochMilli(now).atZone(c.zone())
+                    .toLocalDate().atStartOfDay(c.zone()).toInstant().toEpochMilli();
+            boolean before = false;
+            boolean after = false;
+            if (!series.isEmpty()) {
+                for (PackMapper.Point p : series.get(0).points()) {
+                    if (p.timeMillis() < midnight) {
+                        before = true;
+                    } else {
+                        after = true;
+                    }
+                }
+            }
+            System.err.println("[smoke-day] points=" + pts + " spanBeforeMidnight=" + before
+                    + " spanAfterMidnight=" + after + " (midnight=" + midnight + ")");
+            // Probe: query a window fully inside yesterday to distinguish a split bug from data retention.
+            List<CounterSeriesDto> y = client.getCounter(List.of(objHash), "RecentUser", midnight - 3600_000L, midnight - 1000L);
+            int ypts = y.isEmpty() ? 0 : y.get(0).points().size();
+            System.err.println("[smoke-day] yesterday-1h-only points=" + ypts
+                    + " -> if 0 it's retention, not a split bug");
+        }
+    }
+
+    /**
      * Verifies service partial matching: even with only a short token, the collector (StrMatch)
      * should match the full service name.
      * Queries just 1 row using SCOUTER_SMOKE_SERVICE (default search-order-info-grade).

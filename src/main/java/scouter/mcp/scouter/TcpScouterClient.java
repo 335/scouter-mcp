@@ -3,6 +3,7 @@ package scouter.mcp.scouter;
 import lombok.extern.slf4j.Slf4j;
 import scouter.lang.Counter;
 import scouter.lang.ObjectType;
+import scouter.lang.TextTypes;
 import scouter.lang.constants.ParamConstant;
 import scouter.lang.counters.CounterEngine;
 import scouter.lang.pack.MapPack;
@@ -33,10 +34,15 @@ import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
 import scouter.mcp.policy.Limits;
 
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 public final class TcpScouterClient implements ScouterClient {
@@ -94,7 +100,31 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<CounterSeriesDto> getCounter(List<Integer> objHashes, String counter, long fromMillis, long toMillis) {
-        // Faithful port of webapp CounterConsumer.retrieveCounterByObjHashes: COUNTER_PAST_TIME_ALL
+        // Counter data is stored in per-day files, and COUNTER_PAST_TIME_ALL is single-day. Like the upstream
+        // CounterConsumer, split [from,to] into per-calendar-day segments (in the configured zone), query each
+        // day, and merge points by objHash. Otherwise a window straddling midnight loses data on one side.
+        Map<Integer, List<PackMapper.Point>> mergedByObj = new LinkedHashMap<>();
+        ZoneId zone = config.zone();
+        long cursor = fromMillis;
+        while (cursor < toMillis) {
+            long dayEndExclusive = Instant.ofEpochMilli(cursor).atZone(zone).toLocalDate()
+                    .plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
+            long segFrom = cursor;
+            long segTo = Math.min(dayEndExclusive - 1, toMillis);
+            for (CounterSeriesDto day : queryCounterDay(objHashes, counter, segFrom, segTo)) {
+                mergedByObj.computeIfAbsent(day.objHash(), k -> new ArrayList<>()).addAll(day.points());
+            }
+            cursor = dayEndExclusive;
+        }
+        List<CounterSeriesDto> out = new ArrayList<>(mergedByObj.size());
+        for (Map.Entry<Integer, List<PackMapper.Point>> e : mergedByObj.entrySet()) {
+            out.add(new CounterSeriesDto(e.getKey(), counter, e.getValue()));
+        }
+        return out;
+    }
+
+    /** Single-day counter query (COUNTER_PAST_TIME_ALL), ported from webapp CounterConsumer.retrieveCounterInDay. */
+    private List<CounterSeriesDto> queryCounterDay(List<Integer> objHashes, String counter, long stime, long etime) {
         MapPack param = new MapPack();
         ListValue objHashLv = param.newList(ParamConstant.OBJ_HASH);
         if (objHashes != null) {
@@ -103,8 +133,8 @@ public final class TcpScouterClient implements ScouterClient {
             }
         }
         param.put(ParamConstant.COUNTER, counter);
-        param.put(ParamConstant.STIME, fromMillis);
-        param.put(ParamConstant.ETIME, toMillis);
+        param.put(ParamConstant.STIME, stime);
+        param.put(ParamConstant.ETIME, etime);
 
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
@@ -248,12 +278,32 @@ public final class TcpScouterClient implements ScouterClient {
         boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
         boolean truncated = stoppedByLimit[0] || scanCapReached;
 
+        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0]);
+    }
+
+    /**
+     * Map XLogPacks to DTOs, batch-prefetching service/error text so the dictionary is hit from cache
+     * instead of performing per-row GET_TEXT_PACK round-trips (matters for large result sets).
+     */
+    private List<XLogRowDto> mapRows(List<XLogPack> packs) {
         TextDictionary dict = new TextDictionary(server, buildObjNameMap());
-        List<XLogRowDto> out = new ArrayList<>(kept.size());
-        for (XLogPack xp : kept) {
+        Map<Long, Set<Integer>> serviceByYmd = new HashMap<>();
+        Map<Long, Set<Integer>> errorByYmd = new HashMap<>();
+        for (XLogPack xp : packs) {
+            long ymd = Long.parseLong(scouter.mcp.time.TimeRange.yyyymmdd(xp.endTime, config.zone()));
+            serviceByYmd.computeIfAbsent(ymd, k -> new LinkedHashSet<>()).add(xp.service);
+            if (xp.error != 0) {
+                errorByYmd.computeIfAbsent(ymd, k -> new LinkedHashSet<>()).add(xp.error);
+            }
+        }
+        serviceByYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.SERVICE, ymd, hashes));
+        errorByYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.ERROR, ymd, hashes));
+
+        List<XLogRowDto> out = new ArrayList<>(packs.size());
+        for (XLogPack xp : packs) {
             out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
         }
-        return new XlogSearchResult(out, truncated, scanCapReached, examined[0]);
+        return out;
     }
 
     @Override
@@ -325,24 +375,21 @@ public final class TcpScouterClient implements ScouterClient {
         param.put(ParamConstant.DATE, yyyymmdd);
         param.put(ParamConstant.XLOG_GXID, gxid);
 
-        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
-
-        List<XLogRowDto> out = new ArrayList<>();
+        List<XLogPack> packs = new ArrayList<>();
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
             List<Pack> resp = tcp.process(RequestCmd.XLOG_READ_BY_GXID, param);
-            if (resp == null) {
-                return out;
-            }
-            for (Pack p : resp) {
-                if (p instanceof XLogPack xp) {
-                    out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
+            if (resp != null) {
+                for (Pack p : resp) {
+                    if (p instanceof XLogPack xp) {
+                        packs.add(xp);
+                    }
                 }
             }
-            return out;
         } finally {
             TcpProxy.close(tcp);
         }
+        return mapRows(packs);
     }
 
     // process()/getSingle() may wrap the reader's EOFException in a RuntimeException, so inspect the cause chain.

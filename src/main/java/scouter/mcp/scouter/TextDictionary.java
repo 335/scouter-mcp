@@ -11,8 +11,11 @@ import scouter.mcp.client.Server;
 import scouter.mcp.client.TcpProxy;
 import scouter.net.RequestCmd;
 
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Concrete implementation of the hash -> text resolver.
@@ -54,6 +57,57 @@ public final class TextDictionary implements PackMapper.TextResolver {
     @Override
     public String sql(long yyyymmdd, int hash) {
         return resolve(TextTypes.SQL, yyyymmdd, hash);
+    }
+
+    /**
+     * Batch-resolve many hashes of one type/date in a single GET_TEXT_PACK round-trip and populate the cache.
+     * This avoids the per-row round-trips that would otherwise occur when mapping large result sets.
+     * Hashes that are already cached or zero are skipped; hashes with no text are cached as null.
+     */
+    public void prefetch(String type, long yyyymmdd, Collection<Integer> hashes) {
+        if (hashes == null || hashes.isEmpty()) {
+            return;
+        }
+        Set<Integer> need = new LinkedHashSet<>();
+        for (Integer h : hashes) {
+            if (h == null || h == 0) {
+                continue;
+            }
+            if (!cache.containsKey(type + ":" + yyyymmdd + ":" + h)) {
+                need.add(h);
+            }
+        }
+        if (need.isEmpty()) {
+            return;
+        }
+        MapPack param = new MapPack();
+        param.put(ParamConstant.DATE, String.valueOf(yyyymmdd));
+        param.put(ParamConstant.TEXT_TYPE, type);
+        ListValue dictKeys = param.newList(ParamConstant.TEXT_DICTKEY);
+        for (Integer h : need) {
+            dictKeys.add((long) (int) h);
+        }
+        Map<Integer, String> got = new HashMap<>();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            tcp.process(RequestCmd.GET_TEXT_PACK, param, in -> {
+                Pack p = in.readPack();
+                if (p instanceof TextPack tp) {
+                    got.put(tp.hash, tp.text);
+                }
+            });
+        } catch (Exception e) {
+            // EOF is the collector's normal end-of-stream; any TextPacks read before it are still in 'got'.
+            if (!isEof(e)) {
+                log.warn("batch text decode failed: type={}, yyyymmdd={}, count={}, cause={}",
+                        type, yyyymmdd, need.size(), String.valueOf(e.getMessage()));
+            }
+        } finally {
+            TcpProxy.close(tcp);
+        }
+        for (Integer h : need) {
+            cache.put(type + ":" + yyyymmdd + ":" + h, got.get(h)); // cache null for not-found too
+        }
     }
 
     private String resolve(String type, long yyyymmdd, int hash) {
