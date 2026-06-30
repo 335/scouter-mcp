@@ -8,6 +8,7 @@ import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
+import scouter.mcp.scouter.dto.XlogSearchResult;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,13 +52,19 @@ public final class Tools {
     }
 
     public static String renderSearchXlog(ScouterClient client, SearchXlogParams params) {
-        List<XLogRowDto> rows = client.searchXlog(params);
-        boolean truncated = rows.size() >= params.limit();
+        XlogSearchResult res = client.searchXlog(params);
+        List<XLogRowDto> rows = res.rows();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("count", rows.size());
-        result.put("truncated", truncated);
+        result.put("truncated", res.truncated());
         result.put("rows", rows);
-        if (rows.isEmpty()) {
+        if (res.scanCapReached()) {
+            // 스캔 상한 도달: 결과가 일부일 수 있으므로 필터를 좁히도록 강하게 안내한다(토큰/리소스 절약).
+            result.put("hint", "스캔 상한(" + res.examined()
+                    + ") 도달로 일부만 반환됨. service 또는 objHash 필터를 추가하거나 기간을 좁히세요");
+        } else if (res.truncated()) {
+            result.put("hint", "limit 도달. 더 많은 결과가 있을 수 있으니 limit 를 늘리거나 기간/필터를 조정하세요");
+        } else if (rows.isEmpty()) {
             result.put("hint", "결과가 없다. 기간/필터를 넓혀보세요");
         }
         try {

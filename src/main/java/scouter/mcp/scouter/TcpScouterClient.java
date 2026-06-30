@@ -29,6 +29,8 @@ import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
+import scouter.mcp.scouter.dto.XlogSearchResult;
+import scouter.mcp.policy.Limits;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -146,11 +148,36 @@ public final class TcpScouterClient implements ScouterClient {
         return out;
     }
 
+    /** 스트리밍 조기 중단용 sentinel(정상 흐름 제어, 오류 아님). */
+    private static final class StopStreaming extends RuntimeException {
+        StopStreaming() {
+            super(null, null, false, false);
+        }
+    }
+
     @Override
-    public List<XLogRowDto> searchXlog(SearchXlogParams params) {
+    public XlogSearchResult searchXlog(SearchXlogParams params) {
         // webapp XLogConsumer.searchXLogList 이식: SEARCH_XLOG_LIST.
-        // 컬렉터가 date/stime/etime/objHash/service 로 필터한다. minElapsedMs/onlyError/limit 는
-        // 네이티브 키가 없어 클라이언트에서 필터/트림한다.
+        // 정책(Limits): 운영 firehose 방어를 위해 기간/필터를 검증하고, 스트리밍 중
+        // limit 또는 스캔 상한에 도달하면 소켓을 끊어 컬렉터 스캔/전송과 MCP 힙을 함께 멈춘다.
+        long windowMs = params.toMillis() - params.fromMillis();
+        if (windowMs <= 0) {
+            throw McpError.of(McpError.Code.INVALID_INPUT, "from 은 to 보다 앞서야 합니다");
+        }
+        if (windowMs > Limits.ABS_MAX_WINDOW_MS) {
+            throw McpError.of(McpError.Code.INVALID_INPUT, "조회 기간이 너무 깁니다(최대 24시간)")
+                    .withHint("windowSec", String.valueOf(windowMs / 1000))
+                    .withHint("maxSec", String.valueOf(Limits.ABS_MAX_WINDOW_MS / 1000));
+        }
+        boolean serverFilter = (params.objHash() != null && params.objHash() != 0L)
+                || (params.service() != null && !params.service().isBlank());
+        if (!serverFilter && windowMs > Limits.UNFILTERED_MAX_WINDOW_MS) {
+            throw McpError.of(McpError.Code.INVALID_INPUT,
+                            "service 또는 objHash 필터 없이는 5분 이내만 조회할 수 있습니다. 필터를 추가하거나 기간을 줄이세요")
+                    .withHint("windowSec", String.valueOf(windowMs / 1000))
+                    .withHint("maxUnfilteredSec", String.valueOf(Limits.UNFILTERED_MAX_WINDOW_MS / 1000));
+        }
+
         MapPack param = new MapPack();
         param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(params.fromMillis(), config.zone()));
         param.put(ParamConstant.XLOG_START_TIME, params.fromMillis());
@@ -159,42 +186,69 @@ public final class TcpScouterClient implements ScouterClient {
             param.put(ParamConstant.OBJ_HASH, params.objHash());
         }
         if (params.service() != null && !params.service().isBlank()) {
-            param.put(ParamConstant.XLOG_SERVICE, params.service());
+            // 컬렉터는 service 를 StrMatch 로 필터한다(scouter.util.StrMatch). '*' 없는 평문은 정확일치라
+            // 짧은 토큰으로는 매칭되지 않는다. 사용자가 '*' 를 쓰지 않았으면 부분일치(*term*)로 감싸,
+            // 풀 서비스명을 몰라도 서버 측에서 매칭되게 한다. 이미 '*' 가 있으면 그대로 존중한다.
+            String svc = params.service().trim();
+            String pattern = svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
+            param.put(ParamConstant.XLOG_SERVICE, pattern);
         }
 
-        int limit = params.limit() <= 0 ? 100 : Math.min(params.limit(), 1000);
-        Integer minElapsed = params.minElapsedMs();
-        boolean onlyError = params.onlyError();
+        final int limit = params.limit() <= 0
+                ? Limits.SEARCH_DEFAULT_LIMIT
+                : Math.min(params.limit(), Limits.SEARCH_MAX_LIMIT);
+        final Integer minElapsed = params.minElapsedMs();
+        final boolean onlyError = params.onlyError();
 
-        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
+        // 스트리밍: 매칭분만 limit 까지 모으고, 검사한 Pack 수가 스캔 상한에 닿으면 중단한다.
+        // 텍스트 사전 round-trip 은 소켓을 닫은 뒤(보관분 ≤ limit)에 수행한다.
+        final List<XLogPack> kept = new ArrayList<>();
+        final int[] examined = {0};
+        final boolean[] stoppedByLimit = {false};
 
-        List<XLogRowDto> out = new ArrayList<>();
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
-            List<Pack> resp = tcp.process(RequestCmd.SEARCH_XLOG_LIST, param);
-            if (resp == null) {
-                return out;
+            tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
+                Pack p = in.readPack();
+                examined[0]++;
+                if (p instanceof XLogPack) {
+                    XLogPack xp = (XLogPack) p;
+                    boolean pass = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
+                    if (pass && kept.size() < limit) {
+                        kept.add(xp);
+                    }
+                }
+                if (kept.size() >= limit) {
+                    stoppedByLimit[0] = true;
+                    throw new StopStreaming();
+                }
+                if (examined[0] >= Limits.SEARCH_SCAN_CAP) {
+                    throw new StopStreaming();
+                }
+            });
+        } catch (RuntimeException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+                if (cause instanceof McpError) {
+                    throw (McpError) cause;
+                }
+                throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
             }
-            for (Pack p : resp) {
-                if (!(p instanceof XLogPack)) {
-                    continue;
-                }
-                XLogPack xp = (XLogPack) p;
-                if (minElapsed != null && xp.elapsed < minElapsed) {
-                    continue;
-                }
-                if (onlyError && xp.error == 0) {
-                    continue;
-                }
-                out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
-                if (out.size() >= limit) {
-                    break;
-                }
-            }
-            return out;
+            // 의도된 조기 중단: process() 내부 catch 가 이미 소켓을 close 했으므로 아래 finally 의
+            // TcpProxy.close 는 isValid()=false 로 realClose 되어 풀 오염이 없다.
         } finally {
             TcpProxy.close(tcp);
         }
+
+        boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
+        boolean truncated = stoppedByLimit[0] || scanCapReached;
+
+        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
+        List<XLogRowDto> out = new ArrayList<>(kept.size());
+        for (XLogPack xp : kept) {
+            out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
+        }
+        return new XlogSearchResult(out, truncated, scanCapReached, examined[0]);
     }
 
     @Override

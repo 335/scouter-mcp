@@ -6,6 +6,7 @@ import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
+import scouter.mcp.scouter.dto.XlogSearchResult;
 
 import java.util.List;
 
@@ -21,8 +22,8 @@ public interface ScouterClient extends AutoCloseable {
     // objType의 사용 가능 카운터 메타(name/displayName/unit)
     List<CounterMetaDto> listCounters(String objType);
 
-    // XLog(트랜잭션) 검색. 결과는 최대 params.limit() 건까지 반환한다(텍스트 해석 포함).
-    List<XLogRowDto> searchXlog(SearchXlogParams params);
+    // XLog(트랜잭션) 검색. 스트리밍 중 limit/스캔상한에서 조기 중단하며, 절단 신호를 함께 반환한다.
+    XlogSearchResult searchXlog(SearchXlogParams params);
 
     // 단일 XLog 상세(요약 + 프로파일 스텝/SQL/에러). 바인드 파라미터는 maskSensitive=true 시 마스킹된다.
     XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive);

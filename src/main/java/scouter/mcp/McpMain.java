@@ -9,6 +9,7 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import scouter.mcp.config.Config;
+import scouter.mcp.policy.Limits;
 import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.TcpScouterClient;
 import scouter.mcp.scouter.dto.SearchXlogParams;
@@ -101,14 +102,32 @@ public final class McpMain {
                         if (objHashes.isEmpty() && objType != null) {
                             objHashes = resolveObjHashesByType(client, objType);
                         }
+                        // 팬아웃 캡: objType 이 수십 인스턴스로 퍼지면 응답이 곱으로 커진다. 상한으로 자른다.
+                        int totalObj = objHashes.size();
+                        boolean objTruncated = totalObj > Limits.COUNTER_MAX_OBJ;
+                        if (objTruncated) {
+                            objHashes = objHashes.subList(0, Limits.COUNTER_MAX_OBJ);
+                        }
                         String counter = asString(arguments, "counter");
                         long now = System.currentTimeMillis();
                         long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
                         long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        long windowMs = toMillis - fromMillis;
+                        if (windowMs <= 0) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT, "from 은 to 보다 앞서야 합니다");
+                        }
+                        if (windowMs > Limits.COUNTER_ABS_MAX_WINDOW_MS) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT, "카운터 조회 기간이 너무 깁니다(최대 24시간)");
+                        }
                         String json = Tools.renderGetCounter(client, objHashes, counter, fromMillis, toMillis);
-                        return McpSchema.CallToolResult.builder()
-                                .addTextContent(json)
-                                .build();
+                        McpSchema.CallToolResult.Builder rb = McpSchema.CallToolResult.builder().addTextContent(json);
+                        if (objTruncated) {
+                            rb.addTextContent("{\"note\":\"objType 인스턴스 " + totalObj + "개 중 상위 "
+                                    + Limits.COUNTER_MAX_OBJ + "개만 조회함. 특정 objHash 를 지정하면 정확히 조회됩니다\"}");
+                        }
+                        return rb.build();
                     } catch (scouter.mcp.error.McpError e) {
                         return toolError(e);
                     } catch (IllegalArgumentException e) {
@@ -151,7 +170,7 @@ public final class McpMain {
 
         McpSchema.Tool searchXlog = McpSchema.Tool.builder()
                 .name("search_xlog")
-                .description("XLog(트랜잭션) 목록을 검색한다. from/to 필수, objHash/service/minElapsedMs/onlyError/limit로 필터링")
+                .description("XLog(트랜잭션) 목록을 검색한다. from/to 필수. 운영은 트래픽이 많아 service 또는 objHash 필터 없이는 5분 이내만 허용되고, 스캔 상한 도달 시 일부만 반환된다(truncated/hint 확인). 가능하면 service(부분일치)나 objHash로 좁혀라")
                 .inputSchema(jsonMapper, Schemas.SEARCH_XLOG)
                 .build();
 
@@ -360,9 +379,9 @@ public final class McpMain {
 
     private static int clampLimit(Integer limit) {
         if (limit == null) {
-            return 100;
+            return Limits.SEARCH_DEFAULT_LIMIT;
         }
-        return Math.max(1, Math.min(limit, 1000));
+        return Math.max(1, Math.min(limit, Limits.SEARCH_MAX_LIMIT));
     }
 
     private static List<Integer> resolveObjHashesByType(ScouterClient client, String objType) {

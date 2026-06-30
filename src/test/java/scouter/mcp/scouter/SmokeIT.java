@@ -83,14 +83,14 @@ class SmokeIT {
             System.err.println("[smoke] get_counter '" + counterName + "' series="
                     + (series == null ? 0 : series.size()) + " firstPoints=" + pts);
 
-            // search_xlog: 트랜잭션을 잡기 위해 광역(objHash=null)으로 검색하고,
-            // 비면 윈도우를 6시간까지 넓혀 재시도한다.
+            // search_xlog: 정책상 필터 없는 광역 조회는 5분으로 제한되므로 target objHash 로 필터한다.
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, null, null, null, false, 20));
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, false, 20)).rows();
             if (rows == null || rows.isEmpty()) {
                 long wider = now - 6 * 60 * 60 * 1000L;
                 System.err.println("[smoke] 최근 1시간 0건 - 최근 6시간으로 확대 재검색");
-                rows = client.searchXlog(new SearchXlogParams(wider, now, null, null, null, false, 20));
+                rows = client.searchXlog(
+                        new SearchXlogParams(wider, now, (long) target.objHash(), null, null, false, 20)).rows();
             }
             System.err.println("[smoke] search_xlog rows=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -159,12 +159,12 @@ class SmokeIT {
 
             // 넓게 탐색: minElapsedMs=10으로 non-trivial 트랜잭션만, 상위 50건
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, (long) target.objHash(), null, 10, false, 50));
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, 10, false, 50)).rows();
             if (rows == null || rows.isEmpty()) {
                 // 6시간으로 확대
                 rows = client.searchXlog(
                         new SearchXlogParams(now - 6 * 60 * 60 * 1000L, now,
-                                (long) target.objHash(), null, 10, false, 50));
+                                (long) target.objHash(), null, 10, false, 50)).rows();
             }
             System.err.println("[smoke-sql] xlog rows(minElapsed=10ms)=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -197,6 +197,41 @@ class SmokeIT {
             }
             if (found == null) {
                 System.err.println("[smoke-sql] 탐색 범위에서 SQL 있는 트랜잭션 없음 - skip");
+            }
+        }
+    }
+
+    /**
+     * service 부분일치 검증: 짧은 토큰만 넣어도 collector(StrMatch)가 풀 서비스명을 매칭해야 한다.
+     * SCOUTER_SMOKE_SERVICE(기본 search-order-info-grade)로 1건만 조회한다.
+     */
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void searchXlogByServiceToken() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 60 * 60 * 1000L;
+        String token = System.getProperty("SCOUTER_SMOKE_SERVICE", "search-order-info-grade");
+        String filterType = System.getProperty("SCOUTER_SMOKE_OBJ_TYPE");
+
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            Long objHash = null;
+            if (filterType != null && !filterType.isBlank()) {
+                objHash = client.listObjects().stream()
+                        .filter(o -> filterType.equalsIgnoreCase(o.objType()))
+                        .map(o -> (long) o.objHash()).findFirst().orElse(null);
+            }
+            // 짧은 토큰만 넘긴다(풀 서비스명 미지정). limit=1 로 예제 1건만.
+            List<XLogRowDto> rows = client.searchXlog(
+                    new SearchXlogParams(from, now, objHash, token, null, false, 1)).rows();
+            System.err.println("[smoke-svc] token='" + token + "' rows=" + (rows == null ? 0 : rows.size()));
+            if (rows != null && !rows.isEmpty()) {
+                XLogRowDto r = rows.get(0);
+                System.err.println("[smoke-svc] matched svc=" + r.service()
+                        + " txid=" + r.txid() + " elapsed=" + r.elapsedMs() + "ms endIso=" + r.endTimeIso());
+            } else {
+                System.err.println("[smoke-svc] 최근 1시간 매칭 없음(데이터 부재일 수 있음) - skip");
             }
         }
     }

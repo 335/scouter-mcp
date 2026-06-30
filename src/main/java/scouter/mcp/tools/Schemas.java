@@ -45,10 +45,10 @@ public final class Schemas {
             "from": {"type": "string", "description": "시작 시각(예: now-1h, 2026-06-29T10:00)"},
             "to": {"type": "string", "description": "종료 시각(예: now)"},
             "objHash": {"type": "integer", "description": "필터: 특정 오브젝트 해시"},
-            "service": {"type": "string", "description": "필터: 서비스명 패턴"},
-            "minElapsedMs": {"type": "integer", "description": "필터: 최소 응답시간(ms)"},
-            "onlyError": {"type": "boolean", "description": "필터: 에러 트랜잭션만"},
-            "limit": {"type": "integer", "description": "최대 반환 건수(기본 100, 최대 1000)"}
+            "service": {"type": "string", "description": "필터: 서비스명. 기본 부분일치(서버측 StrMatch)이므로 짧은 토큰만 넣으면 된다. 예: 'search-order-info-grade'를 넣으면 '/api/order/ext/order-info/search-order-info-grade<POST>'가 매칭된다. 풀 서비스명을 추측하지 말 것. 고급: '*'를 직접 쓰면 그 패턴을 그대로 사용."},
+            "minElapsedMs": {"type": "integer", "description": "필터: 최소 응답시간(ms). 클라이언트측 필터"},
+            "onlyError": {"type": "boolean", "description": "필터: 에러 트랜잭션만. 클라이언트측 필터"},
+            "limit": {"type": "integer", "description": "최대 반환 건수(기본 20, 최대 200). 운영은 트래픽이 많으니 작게 유지하라"}
           },
           "required": ["from", "to"]
         }
