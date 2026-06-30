@@ -15,14 +15,14 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 해시 -> 텍스트 해석기의 실 구현.
- * 서비스/에러 텍스트는 컬렉터에 GET_TEXT_PACK(date + type + hash 리스트)으로 질의해 TextPack으로 받아 해석한다.
- * objName 은 listObjects() 결과로 만든 objHash -> objName 맵으로 해석한다.
- * 해석 결과는 (type,yyyymmdd,hash) 키로 캐시해 중복 왕복을 피한다. 해석 실패 시 null 을 반환한다(절대 임의 생성 금지).
+ * Concrete implementation of the hash -> text resolver.
+ * Service/error text is resolved by querying the collector with GET_TEXT_PACK (date + type + hash list) and reading the TextPack response.
+ * objName is resolved via the objHash -> objName map built from listObjects() results.
+ * Resolution results are cached by (type,yyyymmdd,hash) key to avoid redundant round trips. Returns null on resolution failure (never fabricates).
  *
- * GET_TEXT_PACK 프로토콜 (webapp DictionaryConsumer 이식):
+ * GET_TEXT_PACK protocol (ported from webapp DictionaryConsumer):
  *   MapPack { ParamConstant.DATE="date":yyyymmdd, ParamConstant.TEXT_TYPE="type":TextTypes.*, ListValue("hash"): [hash...] }
- *   응답: TextPack { xtype, hash, text } 다건
+ *   response: multiple TextPack { xtype, hash, text }
  */
 @Slf4j
 public final class TextDictionary implements PackMapper.TextResolver {
@@ -65,7 +65,7 @@ public final class TextDictionary implements PackMapper.TextResolver {
             return cache.get(key);
         }
         String text = loadText(type, String.valueOf(yyyymmdd), hash);
-        cache.put(key, text); // null 도 캐시(재질의 방지)
+        cache.put(key, text); // cache null too (prevents re-querying)
         return text;
     }
 
@@ -87,8 +87,8 @@ public final class TextDictionary implements PackMapper.TextResolver {
             });
         } catch (Exception e) {
             if (isEof(e)) {
-                // 해당 날짜에 텍스트가 없는 해시는 컬렉터가 빈 응답으로 끝맺어 EOF 로 나타난다.
-                // 정상적인 미발견 신호이므로 debug 로만 남기고 null 을 반환한다(상위에서 #hash 로 표기).
+                // For a hash with no text on the given date, the collector ends with an empty response, surfacing as EOF.
+                // This is a normal not-found signal, so we only log at debug level and return null (the caller renders #hash).
                 log.debug("text not found: type={}, yyyymmdd={}, hash={}", type, yyyymmdd, hash);
             } else {
                 log.warn("text decode failed: type={}, yyyymmdd={}, hash={}, cause={}",
@@ -101,7 +101,7 @@ public final class TextDictionary implements PackMapper.TextResolver {
         return holder[0];
     }
 
-    // process() 가 reader 의 EOFException 을 RuntimeException 으로 감쌀 수 있어 원인 체인을 확인한다.
+    // process() may wrap the reader's EOFException in a RuntimeException, so we walk the cause chain.
     private static boolean isEof(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
             if (c instanceof java.io.EOFException) {

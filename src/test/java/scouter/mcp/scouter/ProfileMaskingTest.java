@@ -12,7 +12,7 @@ class ProfileMaskingTest {
 
     private static final Masker MASKER = new Masker();
 
-    // SQL/바인드 추출 결과(네트워크와 무관한 중간 표현)에 대해 마스킹 변환만 순수하게 검증한다.
+    // Purely verifies the masking transformation over extracted SQL/bind results (a network-independent intermediate representation).
     private static final List<SqlStepDto> RAW = List.of(
             new SqlStepDto(
                     "SELECT * FROM member WHERE card_no = ? AND email = ?",
@@ -31,12 +31,12 @@ class ProfileMaskingTest {
             assertThat(String.join(",", s.bindParams())).doesNotContain("1234567812345678");
             assertThat(String.join(",", s.bindParams())).doesNotContain("hong@example.com");
         });
-        // 응답시간 등 비민감 정보는 보존
+        // Non-sensitive information such as elapsed time is preserved
         assertThat(masked.get(0).elapsedMs()).isEqualTo(42);
         assertThat(masked.get(1).elapsedMs()).isEqualTo(13);
     }
 
-    // 인라인 시크릿(바인드가 아닌 SQL 텍스트 내부 리터럴)이 든 SQL 1건.
+    // A single SQL containing an inline secret (a literal inside the SQL text, not a bind).
     private static final String INLINE_SECRET_SQL =
             "SELECT * FROM member WHERE card_no = '1234567812345678' AND email = 'hong@example.com'";
 

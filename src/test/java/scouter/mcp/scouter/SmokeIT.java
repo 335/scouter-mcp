@@ -17,8 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * 실 collector 통합 스모크. SCOUTER_COLLECTOR_HOST 가 있을 때만 동작한다.
- * 데이터가 없으면 단언 대신 graceful skip 하며, 결과는 stderr 로 출력한다.
+ * Real collector integration smoke test. Runs only when SCOUTER_COLLECTOR_HOST is set.
+ * When there is no data, it gracefully skips instead of asserting, and prints results to stderr.
  */
 class SmokeIT {
 
@@ -42,13 +42,13 @@ class SmokeIT {
     void exercisesCounterAndXlogQueryPaths() {
         Config c = Config.fromEnv(System.getenv());
         long now = System.currentTimeMillis();
-        long from = now - 60 * 60 * 1000L; // 최근 1시간
+        long from = now - 60 * 60 * 1000L; // last 1 hour
         try (TcpScouterClient client = new TcpScouterClient(c)) {
             client.connect();
 
             List<SObjectDto> objects = client.listObjects();
-            assumeTrue(objects != null && !objects.isEmpty(), "오브젝트가 없어 쿼리 경로 검증을 건너뜀");
-            // SCOUTER_SMOKE_OBJ_TYPE 이 지정되면 그 타입으로 우선 선택(alive 무관); 없으면 alive 우선.
+            assumeTrue(objects != null && !objects.isEmpty(), "no objects available, skipping query path verification");
+            // If SCOUTER_SMOKE_OBJ_TYPE is set, prefer that type (regardless of alive); otherwise prefer alive.
             String filterType = System.getProperty("SCOUTER_SMOKE_OBJ_TYPE");
             SObjectDto target;
             if (filterType != null && !filterType.isBlank()) {
@@ -56,7 +56,7 @@ class SmokeIT {
                         .filter(o -> filterType.equalsIgnoreCase(o.objType()))
                         .findFirst()
                         .orElseGet(() -> {
-                            System.err.println("[smoke] WARN: " + filterType + " 타입 오브젝트 없음, 첫 번째로 폴백");
+                            System.err.println("[smoke] WARN: no object of type " + filterType + ", falling back to first");
                             return objects.get(0);
                         });
             } else {
@@ -74,7 +74,7 @@ class SmokeIT {
                                 + " (" + m.displayName() + ") unit=" + m.unit()));
             }
 
-            // get_counter (가능하면 메타의 첫 카운터, 없으면 대표 후보로 시도)
+            // get_counter (use the first counter from meta if possible, otherwise try a representative candidate)
             String counterName = (counters != null && !counters.isEmpty())
                     ? counters.get(0).counter() : "Elapsed";
             List<CounterSeriesDto> series =
@@ -83,12 +83,12 @@ class SmokeIT {
             System.err.println("[smoke] get_counter '" + counterName + "' series="
                     + (series == null ? 0 : series.size()) + " firstPoints=" + pts);
 
-            // search_xlog: 정책상 필터 없는 광역 조회는 5분으로 제한되므로 target objHash 로 필터한다.
+            // search_xlog: by policy, unfiltered broad queries are limited to 5 minutes, so filter by target objHash.
             List<XLogRowDto> rows = client.searchXlog(
                     new SearchXlogParams(from, now, (long) target.objHash(), null, null, false, 20)).rows();
             if (rows == null || rows.isEmpty()) {
                 long wider = now - 6 * 60 * 60 * 1000L;
-                System.err.println("[smoke] 최근 1시간 0건 - 최근 6시간으로 확대 재검색");
+                System.err.println("[smoke] 0 rows in last 1 hour - widening search to last 6 hours");
                 rows = client.searchXlog(
                         new SearchXlogParams(wider, now, (long) target.objHash(), null, null, false, 20)).rows();
             }
@@ -100,7 +100,7 @@ class SmokeIT {
                                 + " err=" + r.error() + " endIso=" + r.endTimeIso()));
             }
 
-            // get_xlog_detail (행이 있으면 첫 행 상세 + 바인드 파라미터 마스킹 확인)
+            // get_xlog_detail (if rows exist, fetch first row detail + verify bind parameter masking)
             if (rows != null && !rows.isEmpty()) {
                 XLogRowDto first = rows.get(0);
                 String ymd = TimeRange.yyyymmdd(first.endTimeMillis(), c.zone());
@@ -117,21 +117,22 @@ class SmokeIT {
                                     + " sql=" + abbreviate(s.sql())));
                 }
 
-                // get_xlog_by_gxid (gxid 가 있으면 묶음 조회)
+                // get_xlog_by_gxid (if gxid exists, fetch the grouped transactions)
                 if (first.gxid() != 0L) {
                     List<XLogRowDto> grp = client.getXlogByGxid(first.gxid(), ymd);
                     System.err.println("[smoke] get_xlog_by_gxid rows=" + (grp == null ? 0 : grp.size()));
                 }
             } else {
-                System.err.println("[smoke] 최근 1시간 XLog 없음 - 상세/gxid 경로 건너뜀");
+                System.err.println("[smoke] no XLog in last 1 hour - skipping detail/gxid paths");
             }
         }
     }
 
     /**
-     * SQL/바인드 파라미터가 있는 트랜잭션 상세 검증.
-     * minElapsedMs=10ms 필터로 웹필터 healthCheck 류를 걸러내고, SQL 있는 첫 행의 상세를 조회한다.
-     * SQL이 없으면 skip(데이터 없음은 구현 결함이 아님).
+     * Verifies transaction detail that has SQL/bind parameters.
+     * Uses a minElapsedMs=10ms filter to weed out web-filter healthCheck-style transactions,
+     * then fetches the detail of the first row that has SQL.
+     * Skips if there is no SQL (absence of data is not an implementation defect).
      */
     @Test
     @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
@@ -144,7 +145,7 @@ class SmokeIT {
         try (TcpScouterClient client = new TcpScouterClient(c)) {
             client.connect();
 
-            // 타겟 오브젝트 선택
+            // Select target object
             List<SObjectDto> objects = client.listObjects();
             SObjectDto target;
             if (filterType != null && !filterType.isBlank()) {
@@ -154,14 +155,14 @@ class SmokeIT {
             } else {
                 target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(null);
             }
-            assumeTrue(target != null, "대상 오브젝트 없음");
+            assumeTrue(target != null, "no target object");
             System.err.println("[smoke-sql] target hash=" + target.objHash() + " name=" + target.objName());
 
-            // 넓게 탐색: minElapsedMs=10으로 non-trivial 트랜잭션만, 상위 50건
+            // Broad search: minElapsedMs=10 to keep only non-trivial transactions, top 50
             List<XLogRowDto> rows = client.searchXlog(
                     new SearchXlogParams(from, now, (long) target.objHash(), null, 10, false, 50)).rows();
             if (rows == null || rows.isEmpty()) {
-                // 6시간으로 확대
+                // widen to 6 hours
                 rows = client.searchXlog(
                         new SearchXlogParams(now - 6 * 60 * 60 * 1000L, now,
                                 (long) target.objHash(), null, 10, false, 50)).rows();
@@ -173,7 +174,7 @@ class SmokeIT {
                                 + " svc=" + r.service() + " elapsed=" + r.elapsedMs() + "ms"));
             }
 
-            // SQL이 있는 첫 번째 상세를 찾는다(최대 10행 시도)
+            // Find the first detail that has SQL (try up to 10 rows)
             XLogDetailDto found = null;
             if (rows != null) {
                 for (XLogRowDto r : rows.stream().limit(10).toList()) {
@@ -182,7 +183,7 @@ class SmokeIT {
                     int sqlCnt = d.sqls() == null ? 0 : d.sqls().size();
                     if (sqlCnt > 0) {
                         found = d;
-                        System.err.println("[smoke-sql] SQL 있는 txid=" + r.txid()
+                        System.err.println("[smoke-sql] txid with SQL=" + r.txid()
                                 + " steps=" + (d.steps() == null ? 0 : d.steps().size())
                                 + " sqls=" + sqlCnt);
                         d.sqls().forEach(s ->
@@ -196,14 +197,15 @@ class SmokeIT {
                 }
             }
             if (found == null) {
-                System.err.println("[smoke-sql] 탐색 범위에서 SQL 있는 트랜잭션 없음 - skip");
+                System.err.println("[smoke-sql] no transaction with SQL found in search range - skip");
             }
         }
     }
 
     /**
-     * service 부분일치 검증: 짧은 토큰만 넣어도 collector(StrMatch)가 풀 서비스명을 매칭해야 한다.
-     * SCOUTER_SMOKE_SERVICE(기본 search-order-info-grade)로 1건만 조회한다.
+     * Verifies service partial matching: even with only a short token, the collector (StrMatch)
+     * should match the full service name.
+     * Queries just 1 row using SCOUTER_SMOKE_SERVICE (default search-order-info-grade).
      */
     @Test
     @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
@@ -222,7 +224,7 @@ class SmokeIT {
                         .filter(o -> filterType.equalsIgnoreCase(o.objType()))
                         .map(o -> (long) o.objHash()).findFirst().orElse(null);
             }
-            // 짧은 토큰만 넘긴다(풀 서비스명 미지정). limit=1 로 예제 1건만.
+            // Pass only a short token (no full service name). limit=1 for a single example.
             List<XLogRowDto> rows = client.searchXlog(
                     new SearchXlogParams(from, now, objHash, token, null, false, 1)).rows();
             System.err.println("[smoke-svc] token='" + token + "' rows=" + (rows == null ? 0 : rows.size()));
@@ -231,7 +233,7 @@ class SmokeIT {
                 System.err.println("[smoke-svc] matched svc=" + r.service()
                         + " txid=" + r.txid() + " elapsed=" + r.elapsedMs() + "ms endIso=" + r.endTimeIso());
             } else {
-                System.err.println("[smoke-svc] 최근 1시간 매칭 없음(데이터 부재일 수 있음) - skip");
+                System.err.println("[smoke-svc] no match in last 1 hour (data may be absent) - skip");
             }
         }
     }

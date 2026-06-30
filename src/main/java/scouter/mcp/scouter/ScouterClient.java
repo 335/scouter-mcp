@@ -12,23 +12,23 @@ import java.util.List;
 
 public interface ScouterClient extends AutoCloseable {
 
-    void connect();                 // 로그인 + 세션 확보
+    void connect();                 // login + acquire session
 
-    List<SObjectDto> listObjects(); // 오브젝트(에이전트) 목록
+    List<SObjectDto> listObjects(); // list of objects (agents)
 
-    // 과거 구간 카운터 시계열 (objHash 다중)
+    // Counter time series over a past range (multiple objHashes)
     List<CounterSeriesDto> getCounter(List<Integer> objHashes, String counter, long fromMillis, long toMillis);
 
-    // objType의 사용 가능 카운터 메타(name/displayName/unit)
+    // Available counter metadata for an objType (name/displayName/unit)
     List<CounterMetaDto> listCounters(String objType);
 
-    // XLog(트랜잭션) 검색. 스트리밍 중 limit/스캔상한에서 조기 중단하며, 절단 신호를 함께 반환한다.
+    // Search XLogs (transactions). Stops early at the limit/scan cap during streaming and returns a truncation signal as well.
     XlogSearchResult searchXlog(SearchXlogParams params);
 
-    // 단일 XLog 상세(요약 + 프로파일 스텝/SQL/에러). 바인드 파라미터는 maskSensitive=true 시 마스킹된다.
+    // Single XLog detail (summary + profile steps/SQL/errors). Bind parameters are masked when maskSensitive=true.
     XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive);
 
-    // 동일 gxid(글로벌 트랜잭션)에 속한 XLog 목록.
+    // List of XLogs belonging to the same gxid (global transaction).
     List<XLogRowDto> getXlogByGxid(long gxid, String yyyymmdd);
 
     @Override

@@ -7,6 +7,7 @@ import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 
 import java.util.List;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,7 +39,7 @@ class ToolsContractTest {
                 new PackMapper.Point(2000L, 2.5d)));
         when(client.getCounter(any(), eq("Cpu"), anyLong(), anyLong())).thenReturn(List.of(series));
 
-        String json = Tools.renderGetCounter(client, List.of(101), "Cpu", 1000L, 2000L);
+        String json = Tools.renderGetCounter(Locale.ENGLISH, client, List.of(101), "Cpu", 1000L, 2000L);
 
         assertThat(json).contains("Cpu");
         assertThat(json).contains("\"count\":1");
@@ -53,7 +54,7 @@ class ToolsContractTest {
         ScouterClient client = mock(ScouterClient.class);
         when(client.getCounter(any(), eq("Cpu"), anyLong(), anyLong())).thenReturn(List.of());
 
-        String json = Tools.renderGetCounter(client, List.of(101), "Cpu", 1000L, 2000L);
+        String json = Tools.renderGetCounter(Locale.ENGLISH, client, List.of(101), "Cpu", 1000L, 2000L);
 
         assertThat(json).contains("\"series\":[]");
         assertThat(json).contains("hint");

@@ -1,5 +1,10 @@
 package scouter.mcp.tools;
 
+/**
+ * JSON input schemas for the MCP tools. These are part of the tool contract presented to the
+ * MCP client/LLM and are kept in English (static). Only dynamic, user-facing output (error
+ * messages, hints, notes) is localized via {@link scouter.mcp.i18n.Messages}.
+ */
 public final class Schemas {
     private Schemas() {
     }
@@ -8,8 +13,8 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "objType": {"type": "string", "description": "필터: 오브젝트 타입(예: tomcat)"},
-            "nameLike": {"type": "string", "description": "필터: objName 부분일치"}
+            "objType": {"type": "string", "description": "Filter: object type (e.g. tomcat)"},
+            "nameLike": {"type": "string", "description": "Filter: substring match on objName"}
           }
         }
         """;
@@ -18,11 +23,11 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "objHashes": {"type": "array", "items": {"type": "integer"}, "description": "대상 오브젝트 해시 목록"},
-            "objType": {"type": "string", "description": "objType 지정 시 해당 타입의 모든 오브젝트를 대상으로 함"},
-            "counter": {"type": "string", "description": "카운터 이름(예: Cpu, Heap)"},
-            "from": {"type": "string", "description": "시작 시각(예: now-1h, 2026-06-29T10:00)"},
-            "to": {"type": "string", "description": "종료 시각(예: now)"}
+            "objHashes": {"type": "array", "items": {"type": "integer"}, "description": "Target object hashes"},
+            "objType": {"type": "string", "description": "When set, targets all objects of this type (capped at 20 instances)"},
+            "counter": {"type": "string", "description": "Counter name (e.g. Cpu, Heap)"},
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "to": {"type": "string", "description": "End time (e.g. now)"}
           },
           "required": ["counter", "from", "to"]
         }
@@ -32,7 +37,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "objType": {"type": "string", "description": "오브젝트 타입(예: tomcat)"}
+            "objType": {"type": "string", "description": "Object type (e.g. tomcat)"}
           },
           "required": ["objType"]
         }
@@ -42,13 +47,13 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "from": {"type": "string", "description": "시작 시각(예: now-1h, 2026-06-29T10:00)"},
-            "to": {"type": "string", "description": "종료 시각(예: now)"},
-            "objHash": {"type": "integer", "description": "필터: 특정 오브젝트 해시"},
-            "service": {"type": "string", "description": "필터: 서비스명. 기본 부분일치(서버측 StrMatch)이므로 짧은 토큰만 넣으면 된다. 예: 'search-order-info-grade'를 넣으면 '/api/order/ext/order-info/search-order-info-grade<POST>'가 매칭된다. 풀 서비스명을 추측하지 말 것. 고급: '*'를 직접 쓰면 그 패턴을 그대로 사용."},
-            "minElapsedMs": {"type": "integer", "description": "필터: 최소 응답시간(ms). 클라이언트측 필터"},
-            "onlyError": {"type": "boolean", "description": "필터: 에러 트랜잭션만. 클라이언트측 필터"},
-            "limit": {"type": "integer", "description": "최대 반환 건수(기본 20, 최대 200). 운영은 트래픽이 많으니 작게 유지하라"}
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "to": {"type": "string", "description": "End time (e.g. now)"},
+            "objHash": {"type": "integer", "description": "Filter: a specific object hash"},
+            "service": {"type": "string", "description": "Filter: service name. Substring match by default (server-side StrMatch), so a short token is enough. Example: 'search-order-info-grade' matches '/api/order/ext/order-info/search-order-info-grade<POST>'. Do not guess the full service name. Advanced: if you include '*', the pattern is used as-is."},
+            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). Client-side filter"},
+            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. Client-side filter"},
+            "limit": {"type": "integer", "description": "Max rows to return (default 20, max 200). Keep small at production traffic"}
           },
           "required": ["from", "to"]
         }
@@ -58,11 +63,11 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "txid": {"type": "string", "description": "트랜잭션 ID(64-bit long). 일부 MCP 클라이언트는 큰 숫자를 JSON number로 보내면 정밀도가 손실되므로 문자열로 전달"},
-            "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
-            "at": {"type": "string", "description": "조회 시각(예: now-1h, 2026-06-29T10:00). date 미지정 시 날짜 산출에 사용"},
-            "includeBindParams": {"type": "boolean", "description": "바인드 파라미터 포함 여부(기본 true)"},
-            "maskSensitive": {"type": "boolean", "description": "민감정보 마스킹 여부(기본 true)"}
+            "txid": {"type": "string", "description": "Transaction ID (64-bit long). Pass as a string because some MCP clients lose precision when sending large numbers as JSON numbers"},
+            "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
+            "at": {"type": "string", "description": "Query time (e.g. now-1h, 2026-06-29T10:00). Used to derive the date when date is omitted"},
+            "includeBindParams": {"type": "boolean", "description": "Whether to include bind parameters (default true)"},
+            "maskSensitive": {"type": "boolean", "description": "Whether to mask sensitive data (default true)"}
           },
           "required": ["txid"]
         }
@@ -72,9 +77,9 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "gxid": {"type": "string", "description": "글로벌 트랜잭션 ID(64-bit long). 일부 MCP 클라이언트는 큰 숫자를 JSON number로 보내면 정밀도가 손실되므로 문자열로 전달"},
-            "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
-            "at": {"type": "string", "description": "조회 시각(예: now-1h). date 미지정 시 날짜 산출에 사용"}
+            "gxid": {"type": "string", "description": "Global transaction ID (64-bit long). Pass as a string because some MCP clients lose precision when sending large numbers as JSON numbers"},
+            "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
+            "at": {"type": "string", "description": "Query time (e.g. now-1h). Used to derive the date when date is omitted"}
           },
           "required": ["gxid"]
         }

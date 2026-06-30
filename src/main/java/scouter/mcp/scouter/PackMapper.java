@@ -39,16 +39,16 @@ public final class PackMapper {
         return out;
     }
 
-    // 해시 -> 텍스트 해석기. 텍스트 사전(서비스/에러)과 오브젝트 이름 해석을 주입 가능하게 한다.
-    // 알 수 없는 값은 null 반환(호출 측이 "#hash"로 렌더링). 절대 임의 텍스트를 만들지 않는다.
+    // Hash -> text resolver. Allows injecting the text dictionary (service/error) and object name resolution.
+    // Returns null for unknown values (the caller renders them as "#hash"). Never fabricates arbitrary text.
     public interface TextResolver {
-        String service(long yyyymmdd, int hash); // unknown 이면 null
+        String service(long yyyymmdd, int hash); // null if unknown
 
         String error(long yyyymmdd, int hash);
 
         String objName(int objHash);
 
-        // SQL 텍스트(TextTypes.SQL) 해석. 미구현/미해석이면 null. (프로파일 도구에서만 사용)
+        // Resolve SQL text (TextTypes.SQL). null if unimplemented/unresolved. (Used only by profiling tools.)
         default String sql(long yyyymmdd, int hash) {
             return null;
         }
@@ -77,8 +77,8 @@ public final class PackMapper {
                 p.cpu, p.sqlCount, endTimeMillis, endTimeIso);
     }
 
-    // SQL 텍스트와 바인드 파라미터에 마스킹을 적용한다(순수 변환, 네트워크 무관 → 단위 테스트 대상).
-    // mask=false면 원본 그대로 반환한다.
+    // Applies masking to SQL text and bind parameters (pure transformation, network-independent -> unit testable).
+    // If mask=false, returns the original unchanged.
     public static List<SqlStepDto> maskSqls(List<SqlStepDto> raw, boolean mask, Masker masker) {
         if (raw == null) {
             return new ArrayList<>();
@@ -98,12 +98,12 @@ public final class PackMapper {
         return out;
     }
 
-    // XLog 상세(요약 + 스텝 목록 + SQL 목록 + 에러)를 조립한다.
-    // summary: XLOG_READ_BY_TXID 응답을 toXLogRow로 매핑한 결과.
-    // steps: 프로파일 Step[] 전체를 type/name/elapsed로 평탄화.
-    // sqls: SQL 계열 스텝만 추출(텍스트는 dict.sql로 해석, 바인드는 param 문자열 1건을 리스트로 래핑).
-    //   includeBindParams=false면 바인드는 빈 리스트. maskSensitive=true면 SQL/바인드에 마스킹 적용.
-    // errors: summary 에러 + APICALL 에러 스텝(있으면)에서 수집.
+    // Assembles XLog detail (summary + step list + SQL list + errors).
+    // summary: result of mapping the XLOG_READ_BY_TXID response via toXLogRow.
+    // steps: flattens the entire profile Step[] into type/name/elapsed.
+    // sqls: extracts only SQL-family steps (text resolved via dict.sql, binds wrap the single param string in a list).
+    //   If includeBindParams=false, binds is an empty list. If maskSensitive=true, masking is applied to SQL/binds.
+    // errors: collected from the summary error + APICALL error steps (if any).
     public static XLogDetailDto toDetail(XLogRowDto summary, Step[] steps, long yyyymmdd,
                                          boolean includeBindParams, boolean maskSensitive,
                                          Masker masker, TextResolver dict) {
@@ -143,7 +143,7 @@ public final class PackMapper {
                 } else if (step instanceof HashedMessageStep hmsg) {
                     stepDtos.add(new StepDto(stepType(step), "#" + hmsg.hash, hmsg.time));
                 } else {
-                    // 미분류 스텝: 클래스 단순명을 type으로, name은 best-effort(null)
+                    // Unclassified step: use the simple class name as type, name is best-effort (null)
                     stepDtos.add(new StepDto(step.getClass().getSimpleName(), null, 0));
                 }
             }
@@ -153,7 +153,7 @@ public final class PackMapper {
         return new XLogDetailDto(summary, stepDtos, sqls, errors);
     }
 
-    // 스텝 타입 이름. scouter StepEnum 기반의 getStepTypeName을 우선 사용하고, 실패 시 클래스명으로 폴백한다.
+    // Step type name. Prefers getStepTypeName based on scouter StepEnum, falling back to the class name on failure.
     private static String stepType(Step step) {
         try {
             String name = step.getStepTypeName();
@@ -161,7 +161,7 @@ public final class PackMapper {
                 return name;
             }
         } catch (RuntimeException ignore) {
-            // 알 수 없는 타입 → 클래스 단순명 폴백
+            // Unknown type -> fall back to the simple class name
         }
         return step.getClass().getSimpleName();
     }

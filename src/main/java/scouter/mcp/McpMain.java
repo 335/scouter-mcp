@@ -9,6 +9,7 @@ import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import scouter.mcp.config.Config;
+import scouter.mcp.i18n.Messages;
 import scouter.mcp.policy.Limits;
 import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.TcpScouterClient;
@@ -54,7 +55,7 @@ public final class McpMain {
 
         McpSchema.Tool listObjects = McpSchema.Tool.builder()
                 .name("list_objects")
-                .description("Scouter 수집 대상 오브젝트(에이전트) 목록을 조회한다. objType/nameLike로 필터링 가능")
+                .description("List Scouter monitored objects (agents). Filter by objType/nameLike.")
                 .inputSchema(jsonMapper, Schemas.LIST_OBJECTS)
                 .build();
 
@@ -83,7 +84,7 @@ public final class McpMain {
 
         McpSchema.Tool getCounter = McpSchema.Tool.builder()
                 .name("get_counter")
-                .description("과거 구간 카운터 시계열을 조회한다. objHashes 또는 objType 중 하나, counter/from/to 필수")
+                .description("Query counter time series over a past range. One of objHashes/objType, plus counter/from/to, is required.")
                 .inputSchema(jsonMapper, Schemas.GET_COUNTER)
                 .build();
 
@@ -97,12 +98,12 @@ public final class McpMain {
                         if (objHashes.isEmpty() && objType == null) {
                             throw scouter.mcp.error.McpError.of(
                                     scouter.mcp.error.McpError.Code.INVALID_INPUT,
-                                    "objHashes 또는 objType 중 하나는 필수입니다");
+                                    Messages.get(config.locale(), "error.counter_obj_required"));
                         }
                         if (objHashes.isEmpty() && objType != null) {
                             objHashes = resolveObjHashesByType(client, objType);
                         }
-                        // 팬아웃 캡: objType 이 수십 인스턴스로 퍼지면 응답이 곱으로 커진다. 상한으로 자른다.
+                        // Fan-out cap: an objType may spread across dozens of instances, multiplying the response. Cap it.
                         int totalObj = objHashes.size();
                         boolean objTruncated = totalObj > Limits.COUNTER_MAX_OBJ;
                         if (objTruncated) {
@@ -115,17 +116,22 @@ public final class McpMain {
                         long windowMs = toMillis - fromMillis;
                         if (windowMs <= 0) {
                             throw scouter.mcp.error.McpError.of(
-                                    scouter.mcp.error.McpError.Code.INVALID_INPUT, "from 은 to 보다 앞서야 합니다");
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    Messages.get(config.locale(), "error.from_after_to"));
                         }
                         if (windowMs > Limits.COUNTER_ABS_MAX_WINDOW_MS) {
                             throw scouter.mcp.error.McpError.of(
-                                    scouter.mcp.error.McpError.Code.INVALID_INPUT, "카운터 조회 기간이 너무 깁니다(최대 24시간)");
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    Messages.get(config.locale(), "error.counter_window_too_long",
+                                            Limits.COUNTER_ABS_MAX_WINDOW_MS / 3600000));
                         }
-                        String json = Tools.renderGetCounter(client, objHashes, counter, fromMillis, toMillis);
+                        String json = Tools.renderGetCounter(config.locale(), client, objHashes, counter,
+                                fromMillis, toMillis);
                         McpSchema.CallToolResult.Builder rb = McpSchema.CallToolResult.builder().addTextContent(json);
                         if (objTruncated) {
-                            rb.addTextContent("{\"note\":\"objType 인스턴스 " + totalObj + "개 중 상위 "
-                                    + Limits.COUNTER_MAX_OBJ + "개만 조회함. 특정 objHash 를 지정하면 정확히 조회됩니다\"}");
+                            String note = Messages.get(config.locale(), "note.counter_obj_truncated",
+                                    Limits.COUNTER_MAX_OBJ, totalObj);
+                            rb.addTextContent(MAPPER.writeValueAsString(java.util.Map.of("note", note)));
                         }
                         return rb.build();
                     } catch (scouter.mcp.error.McpError e) {
@@ -142,7 +148,7 @@ public final class McpMain {
 
         McpSchema.Tool listCounters = McpSchema.Tool.builder()
                 .name("list_counters")
-                .description("주어진 objType에서 사용 가능한 카운터 메타(name/displayName/unit)를 조회한다")
+                .description("List available counter metadata (name/displayName/unit) for a given objType.")
                 .inputSchema(jsonMapper, Schemas.LIST_COUNTERS)
                 .build();
 
@@ -152,7 +158,7 @@ public final class McpMain {
                     try {
                         Map<String, Object> arguments = request.arguments();
                         String objType = asString(arguments, "objType");
-                        String json = Tools.renderListCounters(client, objType);
+                        String json = Tools.renderListCounters(config.locale(), client, objType);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
                                 .build();
@@ -170,7 +176,7 @@ public final class McpMain {
 
         McpSchema.Tool searchXlog = McpSchema.Tool.builder()
                 .name("search_xlog")
-                .description("XLog(트랜잭션) 목록을 검색한다. from/to 필수. 운영은 트래픽이 많아 service 또는 objHash 필터 없이는 5분 이내만 허용되고, 스캔 상한 도달 시 일부만 반환된다(truncated/hint 확인). 가능하면 service(부분일치)나 objHash로 좁혀라")
+                .description("Search XLogs (transactions). from/to required. At production traffic, without a service or objHash filter only windows up to 5 minutes are allowed, and results are partial once the scan cap is hit (check truncated/hint). Prefer narrowing by service (substring match) or objHash.")
                 .inputSchema(jsonMapper, Schemas.SEARCH_XLOG)
                 .build();
 
@@ -189,7 +195,7 @@ public final class McpMain {
                         int limit = clampLimit(asInteger(arguments, "limit"));
                         SearchXlogParams params = new SearchXlogParams(
                                 fromMillis, toMillis, objHash, service, minElapsedMs, onlyError, limit);
-                        String json = Tools.renderSearchXlog(client, params);
+                        String json = Tools.renderSearchXlog(config.locale(), client, params);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
                                 .build();
@@ -207,7 +213,7 @@ public final class McpMain {
 
         McpSchema.Tool getXlogDetail = McpSchema.Tool.builder()
                 .name("get_xlog_detail")
-                .description("단일 XLog 상세(요약 + 프로파일 스텝/SQL/에러)를 조회한다. txid 필수, 바인드는 기본 마스킹")
+                .description("Get a single XLog detail (summary + profile steps/SQL/errors). txid required; bind parameters are masked by default.")
                 .inputSchema(jsonMapper, Schemas.GET_XLOG_DETAIL)
                 .build();
 
@@ -238,7 +244,7 @@ public final class McpMain {
 
         McpSchema.Tool getXlogByGxid = McpSchema.Tool.builder()
                 .name("get_xlog_by_gxid")
-                .description("동일 gxid(글로벌 트랜잭션)에 속한 XLog 목록을 조회한다. gxid 필수")
+                .description("List XLogs belonging to the same gxid (global transaction). gxid required.")
                 .inputSchema(jsonMapper, Schemas.GET_XLOG_BY_GXID)
                 .build();
 
@@ -249,7 +255,7 @@ public final class McpMain {
                         Map<String, Object> arguments = request.arguments();
                         long gxid = requireLong(arguments, "gxid");
                         String yyyymmdd = resolveYyyymmdd(arguments, config);
-                        String json = Tools.renderXlogByGxid(client, gxid, yyyymmdd);
+                        String json = Tools.renderXlogByGxid(config.locale(), client, gxid, yyyymmdd);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
                                 .build();
@@ -365,7 +371,7 @@ public final class McpMain {
         return value;
     }
 
-    // date(yyyyMMdd) 우선, 없으면 at(상대/ISO)에서 산출, 둘 다 없으면 설정 zone 기준 오늘.
+    // Prefer date(yyyyMMdd); otherwise derive from at(relative/ISO); if neither, use today in the configured zone.
     private static String resolveYyyymmdd(Map<String, Object> arguments, Config config) {
         String date = asString(arguments, "date");
         if (date != null) {

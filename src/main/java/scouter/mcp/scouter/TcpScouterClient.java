@@ -23,6 +23,7 @@ import scouter.mcp.client.ServerRegistry;
 import scouter.mcp.client.TcpProxy;
 import scouter.mcp.config.Config;
 import scouter.mcp.error.McpError;
+import scouter.mcp.i18n.Messages;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
@@ -93,7 +94,7 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<CounterSeriesDto> getCounter(List<Integer> objHashes, String counter, long fromMillis, long toMillis) {
-        // webapp CounterConsumer.retrieveCounterByObjHashes 충실 이식: COUNTER_PAST_TIME_ALL
+        // Faithful port of webapp CounterConsumer.retrieveCounterByObjHashes: COUNTER_PAST_TIME_ALL
         MapPack param = new MapPack();
         ListValue objHashLv = param.newList(ParamConstant.OBJ_HASH);
         if (objHashes != null) {
@@ -127,8 +128,8 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<CounterMetaDto> listCounters(String objType) {
-        // 서버에서 GET_XML_COUNTER로 카운터 정의 XML(default + custom)을 받아 CounterEngine에 적재한다.
-        // 응답: MapPack { "default": BlobValue, ("custom": BlobValue)? }  (ConfigureService.getCounterXml)
+        // Fetch the counter-definition XML (default + custom) via GET_XML_COUNTER and load it into CounterEngine.
+        // Response: MapPack { "default": BlobValue, ("custom": BlobValue)? }  (ConfigureService.getCounterXml)
         CounterEngine engine = loadCounterEngine();
         List<CounterMetaDto> out = new ArrayList<>();
         if (engine == null) {
@@ -148,7 +149,7 @@ public final class TcpScouterClient implements ScouterClient {
         return out;
     }
 
-    /** 스트리밍 조기 중단용 sentinel(정상 흐름 제어, 오류 아님). */
+    /** Sentinel for early streaming termination (normal flow control, not an error). */
     private static final class StopStreaming extends RuntimeException {
         StopStreaming() {
             super(null, null, false, false);
@@ -157,15 +158,17 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public XlogSearchResult searchXlog(SearchXlogParams params) {
-        // webapp XLogConsumer.searchXLogList 이식: SEARCH_XLOG_LIST.
-        // 정책(Limits): 운영 firehose 방어를 위해 기간/필터를 검증하고, 스트리밍 중
-        // limit 또는 스캔 상한에 도달하면 소켓을 끊어 컬렉터 스캔/전송과 MCP 힙을 함께 멈춘다.
+        // Ported from webapp XLogConsumer.searchXLogList: SEARCH_XLOG_LIST.
+        // Policy (Limits): to defend against the production firehose, validate the window/filters and,
+        // during streaming, cut the socket once the limit or scan cap is reached so that the collector
+        // scan/transfer and the MCP heap stop together.
         long windowMs = params.toMillis() - params.fromMillis();
         if (windowMs <= 0) {
-            throw McpError.of(McpError.Code.INVALID_INPUT, "from 은 to 보다 앞서야 합니다");
+            throw McpError.of(McpError.Code.INVALID_INPUT, Messages.get(config.locale(), "error.from_after_to"));
         }
         if (windowMs > Limits.ABS_MAX_WINDOW_MS) {
-            throw McpError.of(McpError.Code.INVALID_INPUT, "조회 기간이 너무 깁니다(최대 24시간)")
+            throw McpError.of(McpError.Code.INVALID_INPUT,
+                            Messages.get(config.locale(), "error.window_too_long", Limits.ABS_MAX_WINDOW_MS / 3600000))
                     .withHint("windowSec", String.valueOf(windowMs / 1000))
                     .withHint("maxSec", String.valueOf(Limits.ABS_MAX_WINDOW_MS / 1000));
         }
@@ -173,7 +176,8 @@ public final class TcpScouterClient implements ScouterClient {
                 || (params.service() != null && !params.service().isBlank());
         if (!serverFilter && windowMs > Limits.UNFILTERED_MAX_WINDOW_MS) {
             throw McpError.of(McpError.Code.INVALID_INPUT,
-                            "service 또는 objHash 필터 없이는 5분 이내만 조회할 수 있습니다. 필터를 추가하거나 기간을 줄이세요")
+                            Messages.get(config.locale(), "error.unfiltered_window",
+                                    Limits.UNFILTERED_MAX_WINDOW_MS / 60000))
                     .withHint("windowSec", String.valueOf(windowMs / 1000))
                     .withHint("maxUnfilteredSec", String.valueOf(Limits.UNFILTERED_MAX_WINDOW_MS / 1000));
         }
@@ -186,9 +190,10 @@ public final class TcpScouterClient implements ScouterClient {
             param.put(ParamConstant.OBJ_HASH, params.objHash());
         }
         if (params.service() != null && !params.service().isBlank()) {
-            // 컬렉터는 service 를 StrMatch 로 필터한다(scouter.util.StrMatch). '*' 없는 평문은 정확일치라
-            // 짧은 토큰으로는 매칭되지 않는다. 사용자가 '*' 를 쓰지 않았으면 부분일치(*term*)로 감싸,
-            // 풀 서비스명을 몰라도 서버 측에서 매칭되게 한다. 이미 '*' 가 있으면 그대로 존중한다.
+            // The collector filters service with StrMatch (scouter.util.StrMatch). A plain string without '*'
+            // is an exact match, so a short token would never match. If the caller did not use '*', wrap it as
+            // a substring match (*term*) so it matches server-side without knowing the full service name.
+            // If '*' is already present, honor the pattern as-is.
             String svc = params.service().trim();
             String pattern = svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
             param.put(ParamConstant.XLOG_SERVICE, pattern);
@@ -200,8 +205,8 @@ public final class TcpScouterClient implements ScouterClient {
         final Integer minElapsed = params.minElapsedMs();
         final boolean onlyError = params.onlyError();
 
-        // 스트리밍: 매칭분만 limit 까지 모으고, 검사한 Pack 수가 스캔 상한에 닿으면 중단한다.
-        // 텍스트 사전 round-trip 은 소켓을 닫은 뒤(보관분 ≤ limit)에 수행한다.
+        // Streaming: collect matches up to the limit, and stop once the number of examined Packs hits the scan cap.
+        // Text-dictionary round-trips are performed after the socket is closed (kept rows <= limit).
         final List<XLogPack> kept = new ArrayList<>();
         final int[] examined = {0};
         final boolean[] stoppedByLimit = {false};
@@ -234,8 +239,8 @@ public final class TcpScouterClient implements ScouterClient {
                 }
                 throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
             }
-            // 의도된 조기 중단: process() 내부 catch 가 이미 소켓을 close 했으므로 아래 finally 의
-            // TcpProxy.close 는 isValid()=false 로 realClose 되어 풀 오염이 없다.
+            // Intended early stop: process()'s internal catch already closed the socket, so the finally's
+            // TcpProxy.close sees isValid()=false and performs realClose, avoiding connection-pool poisoning.
         } finally {
             TcpProxy.close(tcp);
         }
@@ -253,10 +258,10 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive) {
-        // webapp XLogConsumer.retrieveByTxid + ProfileConsumer.retrieveProfile 이식.
-        // 1) XLOG_READ_BY_TXID(getSingle) → XLogPack 요약. 2) TRANX_PROFILE(getSingle) → XLogProfilePack.profile → Step[].
+        // Ported from webapp XLogConsumer.retrieveByTxid + ProfileConsumer.retrieveProfile.
+        // 1) XLOG_READ_BY_TXID(getSingle) -> XLogPack summary. 2) TRANX_PROFILE(getSingle) -> XLogProfilePack.profile -> Step[].
         if (!maskSensitive) {
-            // 민감정보 비마스킹 조회는 감사 로그를 한 줄 남긴다(바인드 값은 절대 로깅하지 않는다).
+            // An unmasked (sensitive) lookup writes one audit log line (bind values are never logged).
             log.warn("code=AUDIT action=unmask txid={}", txid);
         }
 
@@ -268,8 +273,8 @@ public final class TcpScouterClient implements ScouterClient {
 
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
-            // 요약 조회: 해당 txid 가 보관돼 있지 않으면 컬렉터가 빈 응답으로 끝맺어 EOF 로 나타난다.
-            // 이는 "없음" 신호이므로 summary=null 로 두고 진행한다(EOF 가 아닌 오류만 표면화).
+            // Summary lookup: if the txid is not retained, the collector ends with an empty response (seen as EOF).
+            // That is a "not found" signal, so leave summary=null and continue (only surface non-EOF errors).
             try {
                 MapPack txidParam = new MapPack();
                 txidParam.put(ParamConstant.DATE, yyyymmdd);
@@ -285,8 +290,8 @@ public final class TcpScouterClient implements ScouterClient {
                 log.debug("xlog summary not found: txid={}, date={}", txid, yyyymmdd);
             }
 
-            // 프로파일 조회: trivial/미보관 트랜잭션은 프로파일이 없어 EOF 로 나타난다.
-            // steps=null 로 두면 빈 상세가 반환된다(EOF 가 아닌 오류만 표면화).
+            // Profile lookup: trivial/unretained transactions have no profile and show up as EOF.
+            // Leaving steps=null yields an empty detail (only surface non-EOF errors).
             try {
                 MapPack profileParam = new MapPack();
                 profileParam.put(ParamConstant.DATE, yyyymmdd);
@@ -315,7 +320,7 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<XLogRowDto> getXlogByGxid(long gxid, String yyyymmdd) {
-        // webapp XLogConsumer.retrieveXLogPacksByGxid 이식: XLOG_READ_BY_GXID(process) → List<XLogPack>.
+        // Ported from webapp XLogConsumer.retrieveXLogPacksByGxid: XLOG_READ_BY_GXID(process) -> List<XLogPack>.
         MapPack param = new MapPack();
         param.put(ParamConstant.DATE, yyyymmdd);
         param.put(ParamConstant.XLOG_GXID, gxid);
@@ -340,8 +345,8 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
-    // process()/getSingle() 가 reader 의 EOFException 을 RuntimeException 으로 감쌀 수 있어 원인 체인을 확인한다.
-    // EOF 는 컬렉터에 해당 데이터가 없을 때의 정상적인 "없음" 신호다(오류가 아님).
+    // process()/getSingle() may wrap the reader's EOFException in a RuntimeException, so inspect the cause chain.
+    // EOF is the normal "not found" signal when the collector has no such data (not an error).
     private static boolean isEof(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
             if (c instanceof java.io.EOFException) {
@@ -395,6 +400,6 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public void close() {
-        // 커넥션은 풀이 관리한다. 현재 단계에서는 추가 정리할 것이 없다.
+        // Connections are managed by the pool; nothing extra to clean up at this stage.
     }
 }

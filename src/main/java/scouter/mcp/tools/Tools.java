@@ -1,6 +1,7 @@
 package scouter.mcp.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import scouter.mcp.i18n.Messages;
 import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
@@ -12,6 +13,7 @@ import scouter.mcp.scouter.dto.XlogSearchResult;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -34,15 +36,15 @@ public final class Tools {
         }
     }
 
-    public static String renderGetCounter(ScouterClient client, List<Integer> objHashes, String counter,
-                                          long fromMillis, long toMillis) {
+    public static String renderGetCounter(Locale locale, ScouterClient client, List<Integer> objHashes,
+                                          String counter, long fromMillis, long toMillis) {
         List<CounterSeriesDto> series = client.getCounter(objHashes, counter, fromMillis, toMillis);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("counter", counter);
         result.put("count", series.size());
         result.put("series", series);
         if (series.isEmpty()) {
-            result.put("hint", "결과가 없다. 조회 구간(from/to)을 넓히거나 counter 이름/objType을 확인하라");
+            result.put("hint", Messages.get(locale, "hint.counter_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);
@@ -51,7 +53,7 @@ public final class Tools {
         }
     }
 
-    public static String renderSearchXlog(ScouterClient client, SearchXlogParams params) {
+    public static String renderSearchXlog(Locale locale, ScouterClient client, SearchXlogParams params) {
         XlogSearchResult res = client.searchXlog(params);
         List<XLogRowDto> rows = res.rows();
         Map<String, Object> result = new LinkedHashMap<>();
@@ -59,13 +61,12 @@ public final class Tools {
         result.put("truncated", res.truncated());
         result.put("rows", rows);
         if (res.scanCapReached()) {
-            // 스캔 상한 도달: 결과가 일부일 수 있으므로 필터를 좁히도록 강하게 안내한다(토큰/리소스 절약).
-            result.put("hint", "스캔 상한(" + res.examined()
-                    + ") 도달로 일부만 반환됨. service 또는 objHash 필터를 추가하거나 기간을 좁히세요");
+            // Scan cap reached: results may be partial, so strongly steer toward narrowing the filter (saves tokens/resources).
+            result.put("hint", Messages.get(locale, "hint.search_scan_cap", res.examined()));
         } else if (res.truncated()) {
-            result.put("hint", "limit 도달. 더 많은 결과가 있을 수 있으니 limit 를 늘리거나 기간/필터를 조정하세요");
+            result.put("hint", Messages.get(locale, "hint.search_limit"));
         } else if (rows.isEmpty()) {
-            result.put("hint", "결과가 없다. 기간/필터를 넓혀보세요");
+            result.put("hint", Messages.get(locale, "hint.search_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);
@@ -84,13 +85,13 @@ public final class Tools {
         }
     }
 
-    public static String renderXlogByGxid(ScouterClient client, long gxid, String yyyymmdd) {
+    public static String renderXlogByGxid(Locale locale, ScouterClient client, long gxid, String yyyymmdd) {
         List<XLogRowDto> rows = client.getXlogByGxid(gxid, yyyymmdd);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("count", rows.size());
         result.put("rows", rows);
         if (rows.isEmpty()) {
-            result.put("hint", "결과가 없다. gxid/date를 확인하라");
+            result.put("hint", Messages.get(locale, "hint.gxid_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);
@@ -99,13 +100,13 @@ public final class Tools {
         }
     }
 
-    public static String renderListCounters(ScouterClient client, String objType) {
+    public static String renderListCounters(Locale locale, ScouterClient client, String objType) {
         List<CounterMetaDto> counters = client.listCounters(objType);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("objType", objType);
         result.put("counters", counters);
         if (counters.isEmpty()) {
-            result.put("hint", "해당 objType의 카운터 정의를 찾지 못했다. objType 이름을 확인하라");
+            result.put("hint", Messages.get(locale, "hint.list_counters_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);

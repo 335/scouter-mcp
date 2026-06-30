@@ -12,8 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * search_xlog 리소스/토큰 폭발 방지 가드(네트워크 호출 전 순수 검증) 회귀 테스트.
- * 가드는 컬렉터 접속 전에 동작하므로 connect() 없이 검증된다.
+ * Regression test for the search_xlog resource/token explosion guard
+ * (pure validation before any network call).
+ * The guard runs before connecting to the collector, so it is verified without connect().
  */
 class SearchPolicyTest {
 
@@ -27,18 +28,19 @@ class SearchPolicyTest {
     @Test
     void rejectsUnfilteredWindowOverFiveMinutes() {
         long now = 1_000_000_000_000L;
-        long from = now - (Limits.UNFILTERED_MAX_WINDOW_MS + 1000); // 5분 초과, 필터 없음
+        long from = now - (Limits.UNFILTERED_MAX_WINDOW_MS + 1000); // over 5 minutes, no filter
+        // Assert on the error CODE (locale-independent), not the localized message text.
         assertThatThrownBy(() ->
                 client().searchXlog(new SearchXlogParams(from, now, null, null, null, false, 20)))
                 .isInstanceOf(McpError.class)
-                .hasMessageContaining("필터");
+                .matches(e -> ((McpError) e).code() == McpError.Code.INVALID_INPUT);
     }
 
     @Test
     void allowsUnfilteredWithinFiveMinutes() {
-        // 5분 이내 + 필터 없음이면 가드는 통과해야 한다(이후 네트워크 단계에서 실패하더라도 McpError 가드는 아님).
+        // Within 5 minutes + no filter, the guard should pass (even if it later fails at the network stage, that is not the McpError guard).
         long now = 1_000_000_000_000L;
-        long from = now - Limits.UNFILTERED_MAX_WINDOW_MS; // 정확히 5분
+        long from = now - Limits.UNFILTERED_MAX_WINDOW_MS; // exactly 5 minutes
         assertThatThrownBy(() ->
                 client().searchXlog(new SearchXlogParams(from, now, null, null, null, false, 20)))
                 .satisfiesAnyOf(
@@ -50,7 +52,7 @@ class SearchPolicyTest {
     @Test
     void allowsLongWindowWhenObjHashFilterPresent() {
         long now = 1_000_000_000_000L;
-        long from = now - 6L * 60 * 60 * 1000; // 6시간, objHash 필터 있음 → 기간 가드 통과
+        long from = now - 6L * 60 * 60 * 1000; // 6 hours, objHash filter present -> passes the window guard
         assertThatThrownBy(() ->
                 client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, false, 20)))
                 .satisfiesAnyOf(
@@ -62,11 +64,11 @@ class SearchPolicyTest {
     @Test
     void rejectsWindowOverAbsoluteMax() {
         long now = 1_000_000_000_000L;
-        long from = now - (Limits.ABS_MAX_WINDOW_MS + 1000); // 24시간 초과(필터 있어도 거부)
+        long from = now - (Limits.ABS_MAX_WINDOW_MS + 1000); // over 24 hours (rejected even with a filter)
         assertThatThrownBy(() ->
                 client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, false, 20)))
                 .isInstanceOf(McpError.class)
-                .hasMessageContaining("24");
+                .matches(e -> ((McpError) e).code() == McpError.Code.INVALID_INPUT);
     }
 
     @Test
