@@ -11,6 +11,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import scouter.mcp.config.Config;
 import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.TcpScouterClient;
+import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.time.TimeRange;
 import scouter.mcp.tools.Schemas;
 import scouter.mcp.tools.Tools;
@@ -95,10 +96,37 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool searchXlog = McpSchema.Tool.builder()
+                .name("search_xlog")
+                .description("XLog(트랜잭션) 목록을 검색한다. from/to 필수, objHash/service/minElapsedMs/onlyError/limit로 필터링")
+                .inputSchema(jsonMapper, Schemas.SEARCH_XLOG)
+                .build();
+
+        McpServerFeatures.SyncToolSpecification searchXlogSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(searchXlog)
+                .callHandler((exchange, request) -> {
+                    Map<String, Object> arguments = request.arguments();
+                    long now = System.currentTimeMillis();
+                    long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                    long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                    Long objHash = asLong(arguments, "objHash");
+                    String service = asString(arguments, "service");
+                    Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
+                    boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
+                    int limit = clampLimit(asInteger(arguments, "limit"));
+                    SearchXlogParams params = new SearchXlogParams(
+                            fromMillis, toMillis, objHash, service, minElapsedMs, onlyError, limit);
+                    String json = Tools.renderSearchXlog(client, params);
+                    return McpSchema.CallToolResult.builder()
+                            .addTextContent(json)
+                            .build();
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).build())
-                .tools(listObjectsSpec, getCounterSpec, listCountersSpec)
+                .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec)
                 .build();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -139,6 +167,57 @@ public final class McpMain {
             }
         }
         return out;
+    }
+
+    private static Integer asInteger(Map<String, Object> arguments, String key) {
+        if (arguments == null) {
+            return null;
+        }
+        Object value = arguments.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : Integer.parseInt(text);
+    }
+
+    private static Long asLong(Map<String, Object> arguments, String key) {
+        if (arguments == null) {
+            return null;
+        }
+        Object value = arguments.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : Long.parseLong(text);
+    }
+
+    private static Boolean asBoolean(Map<String, Object> arguments, String key) {
+        if (arguments == null) {
+            return null;
+        }
+        Object value = arguments.get(key);
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if (value == null) {
+            return null;
+        }
+        return Boolean.parseBoolean(value.toString().trim());
+    }
+
+    private static int clampLimit(Integer limit) {
+        if (limit == null) {
+            return 100;
+        }
+        return Math.max(1, Math.min(limit, 1000));
     }
 
     private static List<Integer> resolveObjHashesByType(ScouterClient client, String objType) {

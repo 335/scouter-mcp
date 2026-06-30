@@ -5,6 +5,8 @@ import scouter.mcp.scouter.ScouterClient;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
+import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.XLogRowDto;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +41,23 @@ public final class Tools {
         result.put("series", series);
         if (series.isEmpty()) {
             result.put("hint", "결과가 없다. 조회 구간(from/to)을 넓히거나 counter 이름/objType을 확인하라");
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderSearchXlog(ScouterClient client, SearchXlogParams params) {
+        List<XLogRowDto> rows = client.searchXlog(params);
+        boolean truncated = rows.size() >= params.limit();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", rows.size());
+        result.put("truncated", truncated);
+        result.put("rows", rows);
+        if (rows.isEmpty()) {
+            result.put("hint", "결과가 없다. 기간/필터를 넓혀보세요");
         }
         try {
             return MAPPER.writeValueAsString(result);

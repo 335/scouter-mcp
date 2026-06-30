@@ -37,4 +37,20 @@ public final class Schemas {
           "required": ["objType"]
         }
         """;
+
+    public static final String SEARCH_XLOG = """
+        {
+          "type": "object",
+          "properties": {
+            "from": {"type": "string", "description": "시작 시각(예: now-1h, 2026-06-29T10:00)"},
+            "to": {"type": "string", "description": "종료 시각(예: now)"},
+            "objHash": {"type": "integer", "description": "필터: 특정 오브젝트 해시"},
+            "service": {"type": "string", "description": "필터: 서비스명 패턴"},
+            "minElapsedMs": {"type": "integer", "description": "필터: 최소 응답시간(ms)"},
+            "onlyError": {"type": "boolean", "description": "필터: 에러 트랜잭션만"},
+            "limit": {"type": "integer", "description": "최대 반환 건수(기본 100, 최대 1000)"}
+          },
+          "required": ["from", "to"]
+        }
+        """;
 }

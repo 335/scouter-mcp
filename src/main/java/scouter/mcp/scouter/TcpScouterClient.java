@@ -8,6 +8,7 @@ import scouter.lang.counters.CounterEngine;
 import scouter.lang.pack.MapPack;
 import scouter.lang.pack.ObjectPack;
 import scouter.lang.pack.Pack;
+import scouter.lang.pack.XLogPack;
 import scouter.lang.value.BlobValue;
 import scouter.lang.value.ListValue;
 import scouter.lang.value.Value;
@@ -22,9 +23,13 @@ import scouter.mcp.error.McpError;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
+import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.XLogRowDto;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 public final class TcpScouterClient implements ScouterClient {
@@ -132,6 +137,65 @@ public final class TcpScouterClient implements ScouterClient {
             out.add(new CounterMetaDto(c.getName(), c.getDisplayName(), c.getUnit()));
         }
         return out;
+    }
+
+    @Override
+    public List<XLogRowDto> searchXlog(SearchXlogParams params) {
+        // webapp XLogConsumer.searchXLogList 이식: SEARCH_XLOG_LIST.
+        // 컬렉터가 date/stime/etime/objHash/service 로 필터한다. minElapsedMs/onlyError/limit 는
+        // 네이티브 키가 없어 클라이언트에서 필터/트림한다.
+        MapPack param = new MapPack();
+        param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(params.fromMillis(), config.zone()));
+        param.put(ParamConstant.XLOG_START_TIME, params.fromMillis());
+        param.put(ParamConstant.XLOG_END_TIME, params.toMillis());
+        if (params.objHash() != null && params.objHash() != 0L) {
+            param.put(ParamConstant.OBJ_HASH, params.objHash());
+        }
+        if (params.service() != null && !params.service().isBlank()) {
+            param.put(ParamConstant.XLOG_SERVICE, params.service());
+        }
+
+        int limit = params.limit() <= 0 ? 100 : Math.min(params.limit(), 1000);
+        Integer minElapsed = params.minElapsedMs();
+        boolean onlyError = params.onlyError();
+
+        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
+
+        List<XLogRowDto> out = new ArrayList<>();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            List<Pack> resp = tcp.process(RequestCmd.SEARCH_XLOG_LIST, param);
+            if (resp == null) {
+                return out;
+            }
+            for (Pack p : resp) {
+                if (!(p instanceof XLogPack)) {
+                    continue;
+                }
+                XLogPack xp = (XLogPack) p;
+                if (minElapsed != null && xp.elapsed < minElapsed) {
+                    continue;
+                }
+                if (onlyError && xp.error == 0) {
+                    continue;
+                }
+                out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
+                if (out.size() >= limit) {
+                    break;
+                }
+            }
+            return out;
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    private Map<Integer, String> buildObjNameMap() {
+        Map<Integer, String> map = new HashMap<>();
+        for (SObjectDto o : listObjects()) {
+            map.put(o.objHash(), o.objName());
+        }
+        return map;
     }
 
     private CounterEngine loadCounterEngine() {
