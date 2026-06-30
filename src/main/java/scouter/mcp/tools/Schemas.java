@@ -58,7 +58,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "txid": {"type": "number", "description": "트랜잭션 ID(long). 숫자 또는 문자열로 전달 가능"},
+            "txid": {"type": "string", "description": "트랜잭션 ID(64-bit long). 일부 MCP 클라이언트는 큰 숫자를 JSON number로 보내면 정밀도가 손실되므로 문자열로 전달"},
             "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
             "at": {"type": "string", "description": "조회 시각(예: now-1h, 2026-06-29T10:00). date 미지정 시 날짜 산출에 사용"},
             "includeBindParams": {"type": "boolean", "description": "바인드 파라미터 포함 여부(기본 true)"},
@@ -72,7 +72,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "gxid": {"type": "number", "description": "글로벌 트랜잭션 ID(long). 숫자 또는 문자열로 전달 가능"},
+            "gxid": {"type": "string", "description": "글로벌 트랜잭션 ID(64-bit long). 일부 MCP 클라이언트는 큰 숫자를 JSON number로 보내면 정밀도가 손실되므로 문자열로 전달"},
             "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
             "at": {"type": "string", "description": "조회 시각(예: now-1h). date 미지정 시 날짜 산출에 사용"}
           },

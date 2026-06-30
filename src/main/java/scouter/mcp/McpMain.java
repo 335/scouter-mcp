@@ -22,7 +22,25 @@ import java.util.Map;
 
 public final class McpMain {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(McpMain.class);
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     private McpMain() {
+    }
+
+    private static McpSchema.CallToolResult toolError(scouter.mcp.error.McpError e) {
+        log.warn(e.toLogLine());
+        String json;
+        try {
+            json = MAPPER.writeValueAsString(java.util.Map.of(
+                    "code", e.code().name(),
+                    "message", e.getMessage() == null ? "" : e.getMessage(),
+                    "hints", e.hints()));
+        } catch (Exception ex) {
+            json = "{\"code\":\"" + e.code().name() + "\"}";
+        }
+        return McpSchema.CallToolResult.builder().isError(true).addTextContent(json).build();
     }
 
     public static void main(String[] args) {
@@ -42,13 +60,23 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification listObjectsSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(listObjects)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    String objType = asString(arguments, "objType");
-                    String nameLike = asString(arguments, "nameLike");
-                    String json = Tools.renderListObjects(client, objType, nameLike);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objType = asString(arguments, "objType");
+                        String nameLike = asString(arguments, "nameLike");
+                        String json = Tools.renderListObjects(client, objType, nameLike);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
                 })
                 .build();
 
@@ -61,20 +89,35 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification getCounterSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getCounter)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    List<Integer> objHashes = asIntList(arguments, "objHashes");
-                    String objType = asString(arguments, "objType");
-                    if (objHashes.isEmpty() && objType != null) {
-                        objHashes = resolveObjHashesByType(client, objType);
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        List<Integer> objHashes = asIntList(arguments, "objHashes");
+                        String objType = asString(arguments, "objType");
+                        if (objHashes.isEmpty() && objType == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "objHashes 또는 objType 중 하나는 필수입니다");
+                        }
+                        if (objHashes.isEmpty() && objType != null) {
+                            objHashes = resolveObjHashesByType(client, objType);
+                        }
+                        String counter = asString(arguments, "counter");
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        String json = Tools.renderGetCounter(client, objHashes, counter, fromMillis, toMillis);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
                     }
-                    String counter = asString(arguments, "counter");
-                    long now = System.currentTimeMillis();
-                    long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
-                    long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
-                    String json = Tools.renderGetCounter(client, objHashes, counter, fromMillis, toMillis);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
                 })
                 .build();
 
@@ -87,12 +130,22 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification listCountersSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(listCounters)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    String objType = asString(arguments, "objType");
-                    String json = Tools.renderListCounters(client, objType);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objType = asString(arguments, "objType");
+                        String json = Tools.renderListCounters(client, objType);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
                 })
                 .build();
 
@@ -105,21 +158,31 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification searchXlogSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(searchXlog)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    long now = System.currentTimeMillis();
-                    long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
-                    long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
-                    Long objHash = asLong(arguments, "objHash");
-                    String service = asString(arguments, "service");
-                    Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
-                    boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
-                    int limit = clampLimit(asInteger(arguments, "limit"));
-                    SearchXlogParams params = new SearchXlogParams(
-                            fromMillis, toMillis, objHash, service, minElapsedMs, onlyError, limit);
-                    String json = Tools.renderSearchXlog(client, params);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        Long objHash = asLong(arguments, "objHash");
+                        String service = asString(arguments, "service");
+                        Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
+                        boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
+                        int limit = clampLimit(asInteger(arguments, "limit"));
+                        SearchXlogParams params = new SearchXlogParams(
+                                fromMillis, toMillis, objHash, service, minElapsedMs, onlyError, limit);
+                        String json = Tools.renderSearchXlog(client, params);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
                 })
                 .build();
 
@@ -132,15 +195,25 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification getXlogDetailSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getXlogDetail)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    long txid = requireLong(arguments, "txid");
-                    String yyyymmdd = resolveYyyymmdd(arguments, config);
-                    boolean includeBindParams = !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
-                    boolean maskSensitive = !Boolean.FALSE.equals(asBoolean(arguments, "maskSensitive"));
-                    String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams, maskSensitive);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        long txid = requireLong(arguments, "txid");
+                        String yyyymmdd = resolveYyyymmdd(arguments, config);
+                        boolean includeBindParams = !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
+                        boolean maskSensitive = !Boolean.FALSE.equals(asBoolean(arguments, "maskSensitive"));
+                        String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams, maskSensitive);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
                 })
                 .build();
 
@@ -153,13 +226,23 @@ public final class McpMain {
         McpServerFeatures.SyncToolSpecification getXlogByGxidSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getXlogByGxid)
                 .callHandler((exchange, request) -> {
-                    Map<String, Object> arguments = request.arguments();
-                    long gxid = requireLong(arguments, "gxid");
-                    String yyyymmdd = resolveYyyymmdd(arguments, config);
-                    String json = Tools.renderXlogByGxid(client, gxid, yyyymmdd);
-                    return McpSchema.CallToolResult.builder()
-                            .addTextContent(json)
-                            .build();
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        long gxid = requireLong(arguments, "gxid");
+                        String yyyymmdd = resolveYyyymmdd(arguments, config);
+                        String json = Tools.renderXlogByGxid(client, gxid, yyyymmdd);
+                        return McpSchema.CallToolResult.builder()
+                                .addTextContent(json)
+                                .build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
                 })
                 .build();
 

@@ -30,6 +30,8 @@ import scouter.util.CipherUtil;
 import scouter.util.SysJMX;
 
 public class LoginMgr{
+	private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LoginMgr.class);
+
 	public static LoginRequest login(Server server) {
 		String encPassword = CipherUtil.sha256(server.getPassword());
 		server.setSecureMode(true);
@@ -93,7 +95,7 @@ public class LoginMgr{
 				result.success = true;
 			}
 		} catch(Exception e){
-			e.printStackTrace();
+			log.warn("login error: cause={}", String.valueOf(e.getMessage()));
 			result.success = false;
 			result.errorMessage = "Network connection failed : " + e.getMessage();
 		}
@@ -106,7 +108,7 @@ public class LoginMgr{
 		try {
 			p = tcp.getSingle(RequestCmd.GET_XML_COUNTER, null);
 		} catch (Exception e) {
-			e.printStackTrace();
+			log.warn("login error: cause={}", String.valueOf(e.getMessage()));
 			return null;
 		} finally {
 			TcpProxy.close(tcp);
