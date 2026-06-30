@@ -9,11 +9,7 @@ package scouter.mcp.client;
  */
 public final class ClientConfig {
     // Copied from scouter.webapp Configure defaults (net-related only).
-    public static final int NET_TCP_CLIENT_SO_TIMEOUT_MS = 30000;
     public static final int NET_TCP_CLIENT_POOL_SIZE = 12;
-    public static final int NET_TCP_CLIENT_POOL_TIMEOUT_MS = 30000;
-    public static final int NET_TCP_CLIENT_CONNECTION_TIMEOUT_MS = 3000;
-    public static final String NET_LOCAL_UDP_ADDR = null;
 
     // --- Added to satisfy ported classes ---
     // Server.connPool size: StandAloneConfigure.net_webapp_tcp_client_pool_size (apply default = 100).
