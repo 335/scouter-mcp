@@ -53,4 +53,30 @@ public final class Schemas {
           "required": ["from", "to"]
         }
         """;
+
+    public static final String GET_XLOG_DETAIL = """
+        {
+          "type": "object",
+          "properties": {
+            "txid": {"type": "number", "description": "트랜잭션 ID(long). 숫자 또는 문자열로 전달 가능"},
+            "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
+            "at": {"type": "string", "description": "조회 시각(예: now-1h, 2026-06-29T10:00). date 미지정 시 날짜 산출에 사용"},
+            "includeBindParams": {"type": "boolean", "description": "바인드 파라미터 포함 여부(기본 true)"},
+            "maskSensitive": {"type": "boolean", "description": "민감정보 마스킹 여부(기본 true)"}
+          },
+          "required": ["txid"]
+        }
+        """;
+
+    public static final String GET_XLOG_BY_GXID = """
+        {
+          "type": "object",
+          "properties": {
+            "gxid": {"type": "number", "description": "글로벌 트랜잭션 ID(long). 숫자 또는 문자열로 전달 가능"},
+            "date": {"type": "string", "description": "조회 날짜 yyyyMMdd. 미지정 시 at 또는 오늘"},
+            "at": {"type": "string", "description": "조회 시각(예: now-1h). date 미지정 시 날짜 산출에 사용"}
+          },
+          "required": ["gxid"]
+        }
+        """;
 }

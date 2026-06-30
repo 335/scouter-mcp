@@ -9,10 +9,13 @@ import scouter.lang.pack.MapPack;
 import scouter.lang.pack.ObjectPack;
 import scouter.lang.pack.Pack;
 import scouter.lang.pack.XLogPack;
+import scouter.lang.pack.XLogProfilePack;
+import scouter.lang.step.Step;
 import scouter.lang.value.BlobValue;
 import scouter.lang.value.ListValue;
 import scouter.lang.value.Value;
 import scouter.net.RequestCmd;
+import scouter.mcp.masking.Masker;
 import scouter.mcp.client.LoginMgr;
 import scouter.mcp.client.LoginRequest;
 import scouter.mcp.client.Server;
@@ -24,6 +27,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 
 import java.util.ArrayList;
@@ -35,6 +39,7 @@ import java.util.Map;
 public final class TcpScouterClient implements ScouterClient {
 
     private final Config config;
+    private final Masker masker = new Masker();
     private Server server;
 
     public TcpScouterClient(Config config) {
@@ -182,6 +187,77 @@ public final class TcpScouterClient implements ScouterClient {
                 out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
                 if (out.size() >= limit) {
                     break;
+                }
+            }
+            return out;
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    @Override
+    public XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive) {
+        // webapp XLogConsumer.retrieveByTxid + ProfileConsumer.retrieveProfile 이식.
+        // 1) XLOG_READ_BY_TXID(getSingle) → XLogPack 요약. 2) TRANX_PROFILE(getSingle) → XLogProfilePack.profile → Step[].
+        if (!maskSensitive) {
+            // 민감정보 비마스킹 조회는 감사 로그를 한 줄 남긴다(바인드 값은 절대 로깅하지 않는다).
+            log.warn("code=AUDIT action=unmask txid={}", txid);
+        }
+
+        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
+        long ymd = Long.parseLong(yyyymmdd);
+
+        XLogRowDto summary = null;
+        Step[] steps = null;
+
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            MapPack txidParam = new MapPack();
+            txidParam.put(ParamConstant.DATE, yyyymmdd);
+            txidParam.put(ParamConstant.XLOG_TXID, txid);
+            Pack summaryPack = tcp.getSingle(RequestCmd.XLOG_READ_BY_TXID, txidParam);
+            if (summaryPack instanceof XLogPack xp) {
+                summary = PackMapper.toXLogRow(xp, config.zone(), dict);
+            }
+
+            MapPack profileParam = new MapPack();
+            profileParam.put(ParamConstant.DATE, yyyymmdd);
+            profileParam.put(ParamConstant.XLOG_TXID, txid);
+            profileParam.put(ParamConstant.PROFILE_MAX, 10);
+            Pack profilePack = tcp.getSingle(RequestCmd.TRANX_PROFILE, profileParam);
+            if (profilePack instanceof XLogProfilePack pp && pp.profile != null) {
+                steps = Step.toObjects(pp.profile);
+            }
+        } catch (Exception e) {
+            throw McpError.of(McpError.Code.SCOUTER_PROTOCOL_MISMATCH, String.valueOf(e.getMessage()))
+                    .withHint("txid", String.valueOf(txid))
+                    .withHint("date", yyyymmdd);
+        } finally {
+            TcpProxy.close(tcp);
+        }
+
+        return PackMapper.toDetail(summary, steps, ymd, includeBindParams, maskSensitive, masker, dict);
+    }
+
+    @Override
+    public List<XLogRowDto> getXlogByGxid(long gxid, String yyyymmdd) {
+        // webapp XLogConsumer.retrieveXLogPacksByGxid 이식: XLOG_READ_BY_GXID(process) → List<XLogPack>.
+        MapPack param = new MapPack();
+        param.put(ParamConstant.DATE, yyyymmdd);
+        param.put(ParamConstant.XLOG_GXID, gxid);
+
+        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
+
+        List<XLogRowDto> out = new ArrayList<>();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            List<Pack> resp = tcp.process(RequestCmd.XLOG_READ_BY_GXID, param);
+            if (resp == null) {
+                return out;
+            }
+            for (Pack p : resp) {
+                if (p instanceof XLogPack xp) {
+                    out.add(PackMapper.toXLogRow(xp, config.zone(), dict));
                 }
             }
             return out;

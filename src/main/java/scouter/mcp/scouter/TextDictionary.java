@@ -51,6 +51,11 @@ public final class TextDictionary implements PackMapper.TextResolver {
         return objNameByHash.get(objHash);
     }
 
+    @Override
+    public String sql(long yyyymmdd, int hash) {
+        return resolve(TextTypes.SQL, yyyymmdd, hash);
+    }
+
     private String resolve(String type, long yyyymmdd, int hash) {
         if (hash == 0) {
             return null;

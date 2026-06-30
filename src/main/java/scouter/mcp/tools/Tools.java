@@ -6,6 +6,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 
 import java.util.LinkedHashMap;
@@ -58,6 +59,31 @@ public final class Tools {
         result.put("rows", rows);
         if (rows.isEmpty()) {
             result.put("hint", "결과가 없다. 기간/필터를 넓혀보세요");
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderXlogDetail(ScouterClient client, long txid, String yyyymmdd,
+                                          boolean includeBindParams, boolean maskSensitive) {
+        XLogDetailDto detail = client.getXlogDetail(txid, yyyymmdd, includeBindParams, maskSensitive);
+        try {
+            return MAPPER.writeValueAsString(detail);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderXlogByGxid(ScouterClient client, long gxid, String yyyymmdd) {
+        List<XLogRowDto> rows = client.getXlogByGxid(gxid, yyyymmdd);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", rows.size());
+        result.put("rows", rows);
+        if (rows.isEmpty()) {
+            result.put("hint", "결과가 없다. gxid/date를 확인하라");
         }
         try {
             return MAPPER.writeValueAsString(result);

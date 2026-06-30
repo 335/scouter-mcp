@@ -123,10 +123,51 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool getXlogDetail = McpSchema.Tool.builder()
+                .name("get_xlog_detail")
+                .description("단일 XLog 상세(요약 + 프로파일 스텝/SQL/에러)를 조회한다. txid 필수, 바인드는 기본 마스킹")
+                .inputSchema(jsonMapper, Schemas.GET_XLOG_DETAIL)
+                .build();
+
+        McpServerFeatures.SyncToolSpecification getXlogDetailSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getXlogDetail)
+                .callHandler((exchange, request) -> {
+                    Map<String, Object> arguments = request.arguments();
+                    long txid = requireLong(arguments, "txid");
+                    String yyyymmdd = resolveYyyymmdd(arguments, config);
+                    boolean includeBindParams = !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
+                    boolean maskSensitive = !Boolean.FALSE.equals(asBoolean(arguments, "maskSensitive"));
+                    String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams, maskSensitive);
+                    return McpSchema.CallToolResult.builder()
+                            .addTextContent(json)
+                            .build();
+                })
+                .build();
+
+        McpSchema.Tool getXlogByGxid = McpSchema.Tool.builder()
+                .name("get_xlog_by_gxid")
+                .description("동일 gxid(글로벌 트랜잭션)에 속한 XLog 목록을 조회한다. gxid 필수")
+                .inputSchema(jsonMapper, Schemas.GET_XLOG_BY_GXID)
+                .build();
+
+        McpServerFeatures.SyncToolSpecification getXlogByGxidSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getXlogByGxid)
+                .callHandler((exchange, request) -> {
+                    Map<String, Object> arguments = request.arguments();
+                    long gxid = requireLong(arguments, "gxid");
+                    String yyyymmdd = resolveYyyymmdd(arguments, config);
+                    String json = Tools.renderXlogByGxid(client, gxid, yyyymmdd);
+                    return McpSchema.CallToolResult.builder()
+                            .addTextContent(json)
+                            .build();
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).build())
-                .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec)
+                .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
+                        getXlogDetailSpec, getXlogByGxidSpec)
                 .build();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -211,6 +252,27 @@ public final class McpMain {
             return null;
         }
         return Boolean.parseBoolean(value.toString().trim());
+    }
+
+    private static long requireLong(Map<String, Object> arguments, String key) {
+        Long value = asLong(arguments, key);
+        if (value == null) {
+            throw scouter.mcp.error.McpError.of(
+                    scouter.mcp.error.McpError.Code.INVALID_INPUT, key + " is required");
+        }
+        return value;
+    }
+
+    // date(yyyyMMdd) 우선, 없으면 at(상대/ISO)에서 산출, 둘 다 없으면 설정 zone 기준 오늘.
+    private static String resolveYyyymmdd(Map<String, Object> arguments, Config config) {
+        String date = asString(arguments, "date");
+        if (date != null) {
+            return date;
+        }
+        long now = System.currentTimeMillis();
+        String at = asString(arguments, "at");
+        long millis = at != null ? TimeRange.parseInstant(at, config.zone(), now) : now;
+        return TimeRange.yyyymmdd(millis, config.zone());
     }
 
     private static int clampLimit(Integer limit) {
