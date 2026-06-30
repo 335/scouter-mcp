@@ -9,6 +9,7 @@ import scouter.lang.step.SqlStep;
 import scouter.lang.step.Step;
 import scouter.lang.value.ListValue;
 import scouter.mcp.masking.Masker;
+import scouter.mcp.scouter.Hexa32;
 import scouter.mcp.scouter.dto.SqlStepDto;
 import scouter.mcp.scouter.dto.StepDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
@@ -121,8 +122,14 @@ public final class PackMapper {
         String objNameText = dict.objName(p.objHash);
         String objName = objNameText != null ? objNameText : "#" + p.objHash;
 
+        String txidStr = Hexa32.toString32(p.txid);
+        // gxidStr is null when gxid==0 (no distributed context); matches what the client shows.
+        String gxidStr = p.gxid != 0 ? Hexa32.toString32(p.gxid) : null;
+
         return new XLogRowDto(
-                p.txid, p.gxid, p.objHash, objName,
+                p.txid, txidStr,
+                p.gxid, gxidStr,
+                p.objHash, objName,
                 service, p.elapsed, error,
                 p.cpu, p.sqlCount, endTimeMillis, endTimeIso);
     }

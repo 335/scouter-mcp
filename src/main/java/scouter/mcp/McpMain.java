@@ -346,7 +346,11 @@ public final class McpMain {
             return null;
         }
         String text = value.toString().trim();
-        return text.isEmpty() ? null : Long.parseLong(text);
+        if (text.isEmpty()) {
+            return null;
+        }
+        // Accept both raw decimal strings and Hexa32 display strings ("z...", "+...") from the Scouter client.
+        return scouter.mcp.scouter.Hexa32.toLong(text);
     }
 
     private static Boolean asBoolean(Map<String, Object> arguments, String key) {

@@ -63,7 +63,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "txid": {"type": "string", "description": "Transaction ID (64-bit long). Pass as a string because some MCP clients lose precision when sending large numbers as JSON numbers"},
+            "txid": {"type": "string", "description": "Transaction ID — either the raw decimal long OR the Hexa32 string shown in the Scouter client (e.g. 'z3st744n3d2p6q'). Both are accepted."},
             "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
             "at": {"type": "string", "description": "Query time (e.g. now-1h, 2026-06-29T10:00). Used to derive the date when date is omitted"},
             "includeBindParams": {"type": "boolean", "description": "Whether to include bind parameters (default true)"},
@@ -77,7 +77,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "gxid": {"type": "string", "description": "Global transaction ID (64-bit long). Pass as a string because some MCP clients lose precision when sending large numbers as JSON numbers"},
+            "gxid": {"type": "string", "description": "Global transaction ID — either the raw decimal long OR the Hexa32 string shown in the Scouter client. Both are accepted."},
             "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
             "at": {"type": "string", "description": "Query time (e.g. now-1h). Used to derive the date when date is omitted"}
           },
