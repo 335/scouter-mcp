@@ -43,6 +43,8 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // 스모크 테스트용 시스템 프로퍼티를 테스트 JVM 으로 포워딩한다.
+    systemProperty("SCOUTER_SMOKE_OBJ_TYPE", System.getProperty("SCOUTER_SMOKE_OBJ_TYPE", ""))
 }
 
 // stdio MCP: slf4j-simple 로그는 반드시 stderr로만 (stdout은 JSON-RPC 전용)

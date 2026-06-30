@@ -48,7 +48,20 @@ class SmokeIT {
 
             List<SObjectDto> objects = client.listObjects();
             assumeTrue(objects != null && !objects.isEmpty(), "오브젝트가 없어 쿼리 경로 검증을 건너뜀");
-            SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
+            // SCOUTER_SMOKE_OBJ_TYPE 이 지정되면 그 타입으로 우선 선택(alive 무관); 없으면 alive 우선.
+            String filterType = System.getProperty("SCOUTER_SMOKE_OBJ_TYPE");
+            SObjectDto target;
+            if (filterType != null && !filterType.isBlank()) {
+                target = objects.stream()
+                        .filter(o -> filterType.equalsIgnoreCase(o.objType()))
+                        .findFirst()
+                        .orElseGet(() -> {
+                            System.err.println("[smoke] WARN: " + filterType + " 타입 오브젝트 없음, 첫 번째로 폴백");
+                            return objects.get(0);
+                        });
+            } else {
+                target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
+            }
             System.err.println("[smoke] target obj hash=" + target.objHash()
                     + " name=" + target.objName() + " type=" + target.objType());
 
@@ -111,6 +124,79 @@ class SmokeIT {
                 }
             } else {
                 System.err.println("[smoke] 최근 1시간 XLog 없음 - 상세/gxid 경로 건너뜀");
+            }
+        }
+    }
+
+    /**
+     * SQL/바인드 파라미터가 있는 트랜잭션 상세 검증.
+     * minElapsedMs=10ms 필터로 웹필터 healthCheck 류를 걸러내고, SQL 있는 첫 행의 상세를 조회한다.
+     * SQL이 없으면 skip(데이터 없음은 구현 결함이 아님).
+     */
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void xlogDetailWithSql() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 60 * 60 * 1000L;
+
+        String filterType = System.getProperty("SCOUTER_SMOKE_OBJ_TYPE");
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+
+            // 타겟 오브젝트 선택
+            List<SObjectDto> objects = client.listObjects();
+            SObjectDto target;
+            if (filterType != null && !filterType.isBlank()) {
+                target = objects.stream()
+                        .filter(o -> filterType.equalsIgnoreCase(o.objType()))
+                        .findFirst().orElse(null);
+            } else {
+                target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(null);
+            }
+            assumeTrue(target != null, "대상 오브젝트 없음");
+            System.err.println("[smoke-sql] target hash=" + target.objHash() + " name=" + target.objName());
+
+            // 넓게 탐색: minElapsedMs=10으로 non-trivial 트랜잭션만, 상위 50건
+            List<XLogRowDto> rows = client.searchXlog(
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, 10, false, 50));
+            if (rows == null || rows.isEmpty()) {
+                // 6시간으로 확대
+                rows = client.searchXlog(
+                        new SearchXlogParams(now - 6 * 60 * 60 * 1000L, now,
+                                (long) target.objHash(), null, 10, false, 50));
+            }
+            System.err.println("[smoke-sql] xlog rows(minElapsed=10ms)=" + (rows == null ? 0 : rows.size()));
+            if (rows != null) {
+                rows.stream().limit(10).forEach(r ->
+                        System.err.println("[smoke-sql]   txid=" + r.txid()
+                                + " svc=" + r.service() + " elapsed=" + r.elapsedMs() + "ms"));
+            }
+
+            // SQL이 있는 첫 번째 상세를 찾는다(최대 10행 시도)
+            XLogDetailDto found = null;
+            if (rows != null) {
+                for (XLogRowDto r : rows.stream().limit(10).toList()) {
+                    String ymd = TimeRange.yyyymmdd(r.endTimeMillis(), c.zone());
+                    XLogDetailDto d = client.getXlogDetail(r.txid(), ymd, true, true);
+                    int sqlCnt = d.sqls() == null ? 0 : d.sqls().size();
+                    if (sqlCnt > 0) {
+                        found = d;
+                        System.err.println("[smoke-sql] SQL 있는 txid=" + r.txid()
+                                + " steps=" + (d.steps() == null ? 0 : d.steps().size())
+                                + " sqls=" + sqlCnt);
+                        d.sqls().forEach(s ->
+                                System.err.println("[smoke-sql]   sql elapsed=" + s.elapsedMs() + "ms"
+                                        + " binds=" + (s.bindParams() == null ? 0 : s.bindParams().size())
+                                        + " sql=" + abbreviate(s.sql())
+                                        + (s.bindParams() != null && !s.bindParams().isEmpty()
+                                            ? " | params=" + s.bindParams() : "")));
+                        break;
+                    }
+                }
+            }
+            if (found == null) {
+                System.err.println("[smoke-sql] 탐색 범위에서 SQL 있는 트랜잭션 없음 - skip");
             }
         }
     }
