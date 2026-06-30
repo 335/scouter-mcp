@@ -214,7 +214,7 @@ public final class McpMain {
 
         McpSchema.Tool getXlogDetail = McpSchema.Tool.builder()
                 .name("get_xlog_detail")
-                .description("Get a single XLog detail (summary + profile steps/SQL/errors). txid required; bind parameters are masked by default.")
+                .description("Get a single XLog detail (summary + profile steps/SQL/errors). txid is a globally unique ID but the collector indexes XLogs by day, so the correct date is also required. Use the endTimeIso from a search_xlog result row as the 'at' parameter to get the date automatically. Accepts Hexa32 txid strings (e.g. 'z3st744n3d2p6q') as well as raw longs.")
                 .inputSchema(jsonMapper, Schemas.GET_XLOG_DETAIL)
                 .build();
 

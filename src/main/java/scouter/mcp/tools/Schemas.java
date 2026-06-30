@@ -64,8 +64,8 @@ public final class Schemas {
           "type": "object",
           "properties": {
             "txid": {"type": "string", "description": "Transaction ID — either the raw decimal long OR the Hexa32 string shown in the Scouter client (e.g. 'z3st744n3d2p6q'). Both are accepted."},
-            "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
-            "at": {"type": "string", "description": "Query time (e.g. now-1h, 2026-06-29T10:00). Used to derive the date when date is omitted"},
+            "date": {"type": "string", "description": "Date the transaction occurred, yyyyMMdd (e.g. '20260701'). IMPORTANT: the collector stores XLogs in per-day partitions keyed by this date, so the lookup fails silently if the date is wrong. When calling from a search_xlog result, pass the date portion of that row's endTimeIso. If omitted, derived from 'at' or today."},
+            "at": {"type": "string", "description": "Alternative to 'date': an ISO timestamp or relative expression (e.g. '2026-07-01T17:28:00+09:00', 'now-1h'). The date is extracted automatically. Use the endTimeIso value from the search_xlog result to avoid wrong-date misses."},
             "includeBindParams": {"type": "boolean", "description": "Whether to include bind parameters (default true)"},
             "maskSensitive": {"type": "boolean", "description": "Whether to mask sensitive data (default true)"}
           },
@@ -78,8 +78,8 @@ public final class Schemas {
           "type": "object",
           "properties": {
             "gxid": {"type": "string", "description": "Global transaction ID — either the raw decimal long OR the Hexa32 string shown in the Scouter client. Both are accepted."},
-            "date": {"type": "string", "description": "Query date yyyyMMdd. If omitted, derived from at or today"},
-            "at": {"type": "string", "description": "Query time (e.g. now-1h). Used to derive the date when date is omitted"}
+            "date": {"type": "string", "description": "Date yyyyMMdd. Same per-day partition requirement as get_xlog_detail: use the date portion of endTimeIso from any row in the same transaction group. If omitted, derived from 'at' or today."},
+            "at": {"type": "string", "description": "Alternative to 'date': ISO timestamp or relative expression (e.g. endTimeIso from a search_xlog row). The date is extracted automatically."}
           },
           "required": ["gxid"]
         }
