@@ -5,3 +5,6 @@ out/
 .idea/
 *.iml
 .DS_Store
+# Transient artifacts produced by CI when packing the mcpb bundle
+mcpb-build/
+*.mcpb

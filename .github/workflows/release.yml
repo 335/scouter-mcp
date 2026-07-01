@@ -1,0 +1,88 @@
+name: Release
+
+# Pushing a tag that starts with "v":
+#  1) builds the fat jar,
+#  2) builds the .mcpb bundle wrapping that jar,
+#  3) attaches both to a GitHub Release, and
+#  4) publishes an mcpb package to the official MCP registry (registry.modelcontextprotocol.io).
+# Runtime requirement: Java 17+ on the user's host (the mcpb bundle runs the jar with the host java).
+# Example: git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # create the release and upload assets
+  id-token: write   # OIDC authentication to the MCP registry
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Derive version and lowercase owner
+        id: meta
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build fat jar
+        run: ./gradlew --no-daemon -PappVersion=${{ steps.meta.outputs.version }} test shadowJar
+
+      - name: Build .mcpb bundle
+        id: mcpb
+        run: |
+          VERSION=${{ steps.meta.outputs.version }}
+          mkdir -p mcpb-build
+          # Substitute the manifest version with the tag version
+          sed "s/0\.0\.0/${VERSION}/g" mcpb/manifest.json > mcpb-build/manifest.json
+          cp build/libs/scouter-mcp-${VERSION}-all.jar mcpb-build/scouter-mcp.jar
+          npx -y @anthropic-ai/mcpb pack mcpb-build scouter-mcp-${VERSION}.mcpb
+          SHA=$(openssl dgst -sha256 scouter-mcp-${VERSION}.mcpb | awk '{print $2}')
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/libs/scouter-mcp-*-all.jar
+            scouter-mcp-*.mcpb
+          generate_release_notes: true
+
+      # --- Publish to the official MCP registry (mcpb) ---
+      - name: Render server.json (owner + version + sha256)
+        run: |
+          VERSION=${{ steps.meta.outputs.version }}
+          sed -e "s/__OWNER__/${{ steps.meta.outputs.owner }}/g" \
+              -e "s/__SHA256__/${{ steps.mcpb.outputs.sha256 }}/g" \
+              -e "s/0\.0\.0/${VERSION}/g" \
+              server.json > server.rendered.json
+          mv server.rendered.json server.json
+          cat server.json
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish

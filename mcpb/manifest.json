@@ -1,0 +1,69 @@
+{
+  "manifest_version": "0.3",
+  "name": "scouter-mcp",
+  "display_name": "Scouter MCP",
+  "version": "0.0.0",
+  "description": "Query Scouter APM (objects, counters, XLog transactions) over stdio via a Scouter collector. Requires Java 17+ on the host (uses the host `java`).",
+  "author": {
+    "name": "335",
+    "url": "https://github.com/335"
+  },
+  "server": {
+    "type": "binary",
+    "entry_point": "scouter-mcp.jar",
+    "mcp_config": {
+      "command": "java",
+      "args": ["-jar", "${__dirname}/scouter-mcp.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "${user_config.collector_host}",
+        "SCOUTER_COLLECTOR_PORT": "${user_config.collector_port}",
+        "SCOUTER_USER": "${user_config.scouter_user}",
+        "SCOUTER_PASSWORD": "${user_config.scouter_password}",
+        "SCOUTER_TZ": "${user_config.timezone}"
+      }
+    }
+  },
+  "user_config": {
+    "collector_host": {
+      "type": "string",
+      "title": "Collector Host",
+      "description": "Scouter collector host",
+      "required": true
+    },
+    "collector_port": {
+      "type": "number",
+      "title": "Collector Port",
+      "description": "Scouter collector TCP port",
+      "required": true,
+      "default": 6100
+    },
+    "scouter_user": {
+      "type": "string",
+      "title": "Scouter User",
+      "description": "Scouter login user",
+      "required": true
+    },
+    "scouter_password": {
+      "type": "string",
+      "title": "Scouter Password",
+      "description": "Scouter login password. Stored locally in plaintext (0600 config file), not the OS keychain — prefer a least-privilege / read-only account.",
+      "required": true,
+      "sensitive": true
+    },
+    "timezone": {
+      "type": "string",
+      "title": "Timezone",
+      "description": "IANA timezone for time-range parsing and display",
+      "required": false,
+      "default": "Asia/Seoul"
+    }
+  },
+  "tools": [
+    { "name": "list_objects", "description": "List Scouter monitored objects (agents)." },
+    { "name": "get_counter", "description": "Query counter time series over a past range." },
+    { "name": "list_counters", "description": "List available counter metadata for an objType." },
+    { "name": "search_xlog", "description": "Search XLogs (transactions)." },
+    { "name": "get_xlog_detail", "description": "Get a single XLog detail (profile steps/SQL/errors)." },
+    { "name": "get_xlog_by_gxid", "description": "List XLogs belonging to the same gxid." }
+  ]
+}
