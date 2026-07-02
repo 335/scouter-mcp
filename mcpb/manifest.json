@@ -6,7 +6,7 @@
   "description": "Query Scouter APM (objects, counters, XLog transactions) over stdio via a Scouter collector. Requires Java 17+ on the host (uses the host `java`).",
   "author": {
     "name": "335",
-    "url": "https://github.com/335"
+    "url": "https://github.com/335/scouter-mcp"
   },
   "server": {
     "type": "binary",
