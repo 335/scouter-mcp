@@ -8,6 +8,8 @@ import scouter.lang.step.MethodStep;
 import scouter.lang.step.SqlStep;
 import scouter.lang.step.Step;
 import scouter.lang.value.ListValue;
+import scouter.mcp.policy.Limits;
+import scouter.mcp.policy.Truncate;
 import scouter.mcp.scouter.Hexa32;
 import scouter.mcp.scouter.dto.SqlStepDto;
 import scouter.mcp.scouter.dto.StepDto;
@@ -135,7 +137,7 @@ public final class PackMapper {
         String error = null;
         if (p.error != 0) {
             String errText = dict.error(yyyymmdd, p.error);
-            error = errText != null ? errText : "#" + p.error;
+            error = Truncate.text(errText != null ? errText : "#" + p.error, Limits.ERROR_TEXT_MAX_CHARS);
         }
 
         String objNameText = dict.objName(p.objHash);
@@ -169,14 +171,21 @@ public final class PackMapper {
             errors.add(summary.error());
         }
 
+        int total = 0;
         if (steps != null) {
             for (Step step : steps) {
                 if (step == null) {
                     continue;
                 }
+                total++;
+                // Token budget: everything past DETAIL_MAX_STEPS is dropped (steps AND their SQL rows);
+                // totalSteps/stepsTruncated tell the model the profile continues beyond what it sees.
+                if (stepDtos.size() >= Limits.DETAIL_MAX_STEPS) {
+                    continue;
+                }
                 if (step instanceof SqlStep sql) {
                     String text = dict.sql(yyyymmdd, sql.hash);
-                    String sqlText = text != null ? text : "#" + sql.hash;
+                    String sqlText = Truncate.text(text != null ? text : "#" + sql.hash, Limits.SQL_TEXT_MAX_CHARS);
                     List<String> binds = new ArrayList<>();
                     if (includeBindParams && sql.param != null && !sql.param.isEmpty()) {
                         binds.add(sql.param);
@@ -186,7 +195,7 @@ public final class PackMapper {
                 } else if (step instanceof ApiCallStep api) {
                     if (api.error != 0) {
                         String e = dict.error(yyyymmdd, api.error);
-                        errors.add(e != null ? e : "#" + api.error);
+                        errors.add(Truncate.text(e != null ? e : "#" + api.error, Limits.ERROR_TEXT_MAX_CHARS));
                     }
                     String name = api.address != null ? api.address : "#" + api.hash;
                     stepDtos.add(new StepDto(stepType(step), name, api.elapsed));
@@ -204,7 +213,9 @@ public final class PackMapper {
             }
         }
 
-        return new XLogDetailDto(summary, stepDtos, rawSqls, errors);
+        boolean stepsTruncated = stepDtos.size() < total;
+        return new XLogDetailDto(summary, stepDtos, rawSqls, errors,
+                stepsTruncated ? total : null, stepsTruncated ? Boolean.TRUE : null);
     }
 
     // Step type name. Prefers getStepTypeName based on scouter StepEnum, falling back to the class name on failure.

@@ -51,4 +51,36 @@ public final class Limits {
      * from the full series) to bound LLM tokens.
      */
     public static final int COUNTER_MAX_POINTS = 360;
+
+    // --- response text budgets ---
+    /** Max chars of a single SQL text in responses; longer texts get a truncation marker (token bound). */
+    public static final int SQL_TEXT_MAX_CHARS = 1500;
+    /** Max chars of a single error message text (stack-trace-like messages can reach tens of KB). */
+    public static final int ERROR_TEXT_MAX_CHARS = 500;
+    /** Max profile steps rendered by get_xlog_detail. Upstream caps blocks (MAX_PROFILE_BLOCK) but not steps. */
+    public static final int DETAIL_MAX_STEPS = 150;
+    /** Max chars of a thread stack trace in get_thread_detail. */
+    public static final int STACK_TEXT_MAX_CHARS = 4000;
+    /** Max chars of a single env value in get_object_env (java.class.path can be enormous). */
+    public static final int ENV_VALUE_MAX_CHARS = 500;
+
+    // --- fan-out pass budget ---
+    /**
+     * Hard cap on collector round-trips a single request may fan out to (instances x day segments).
+     * Currently unreachable with SEARCH_MAX_OBJ x 2 day segments, but guards the invariant if windows
+     * or instance caps ever widen.
+     */
+    public static final int MAX_QUERY_PASSES = 40;
+
+    // --- list_threads ---
+    /** Max alive instances a fuzzy target may fan out to (a JVM can hold hundreds of threads each). */
+    public static final int THREAD_MAX_OBJ = 5;
+    /** Max thread rows returned per instance (top by cpu); the state histogram always covers all threads. */
+    public static final int THREAD_MAX_ROWS = 50;
+
+    // --- get_summary / get_counter_stat (daily pre-aggregated stats) ---
+    /** Max calendar days a daily-stat query may span. Cheap per day, but bounded regardless. */
+    public static final int DAILY_STAT_MAX_DAYS = 31;
+    /** Max rows per get_summary category (top by count). */
+    public static final int SUMMARY_TOOL_MAX_ROWS = 50;
 }
