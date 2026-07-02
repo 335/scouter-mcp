@@ -85,12 +85,12 @@ class SmokeIT {
 
             // search_xlog: by policy, unfiltered broad queries are limited to 5 minutes, so filter by target objHash.
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, null, false, 20)).rows();
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, null, null, false, 20)).rows();
             if (rows == null || rows.isEmpty()) {
                 long wider = now - 6 * 60 * 60 * 1000L;
                 System.err.println("[smoke] 0 rows in last 1 hour - widening search to last 6 hours");
                 rows = client.searchXlog(
-                        new SearchXlogParams(wider, now, (long) target.objHash(), null, null, null, null, null, false, 20)).rows();
+                        new SearchXlogParams(wider, now, (long) target.objHash(), null, null, null, null, null, null, false, 20)).rows();
             }
             System.err.println("[smoke] search_xlog rows=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -160,12 +160,12 @@ class SmokeIT {
 
             // Broad search: minElapsedMs=10 to keep only non-trivial transactions, top 50
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, 10, false, 50)).rows();
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, null, 10, false, 50)).rows();
             if (rows == null || rows.isEmpty()) {
                 // widen to 6 hours
                 rows = client.searchXlog(
                         new SearchXlogParams(now - 6 * 60 * 60 * 1000L, now,
-                                (long) target.objHash(), null, null, null, null, 10, false, 50)).rows();
+                                (long) target.objHash(), null, null, null, null, null, 10, false, 50)).rows();
             }
             System.err.println("[smoke-sql] xlog rows(minElapsed=10ms)=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -276,7 +276,7 @@ class SmokeIT {
             }
             // Pass only a short token (no full service name). limit=1 for a single example.
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, objHash, token, null, null, null, null, false, 1)).rows();
+                    new SearchXlogParams(from, now, objHash, null, token, null, null, null, null, false, 1)).rows();
             System.err.println("[smoke-svc] token='" + token + "' rows=" + (rows == null ? 0 : rows.size()));
             if (rows != null && !rows.isEmpty()) {
                 XLogRowDto r = rows.get(0);
@@ -300,7 +300,7 @@ class SmokeIT {
             assumeTrue(objects != null && !objects.isEmpty(), "no objects, skipping summary");
             SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
             var res = client.getServiceSummary(new SearchXlogParams(
-                    from, now, (long) target.objHash(), null, null, null, null, null, false, 0));
+                    from, now, (long) target.objHash(), null, null, null, null, null, null, false, 0));
             assertThat(res).isNotNull();
             System.err.println("[smoke-summary] services=" + res.services().size()
                     + " totalCount=" + res.totalCount() + " scanCapReached=" + res.scanCapReached());
@@ -338,13 +338,35 @@ class SmokeIT {
             List<SObjectDto> objects = client.listObjects();
             assumeTrue(objects != null && !objects.isEmpty(), "no objects, skipping active services");
             SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
-            var active = client.getActiveServices(null, (long) target.objHash());
+            var active = client.getActiveServices(null, (long) target.objHash(), null);
             assertThat(active).isNotNull();
             System.err.println("[smoke-active] objHash=" + target.objHash() + " running=" + active.size());
             active.stream().limit(5).forEach(a ->
                     System.err.println("[smoke-active] id=" + a.id() + " state=" + a.state()
                             + " elapsedMs=" + a.elapsedMs() + " service=" + abbreviate(a.service())
                             + " sql=" + abbreviate(a.sql())));
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void exercisesFuzzyTargetResolution() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 60 * 60 * 1000L;
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            List<SObjectDto> objects = client.listObjects();
+            assumeTrue(objects != null && !objects.isEmpty(), "no objects, skipping fuzzy resolution");
+            SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
+            // Uppercase fragment of a real objName: verifies case-insensitive resolution end-to-end.
+            String fragment = target.objName().toUpperCase();
+            var res = client.searchXlog(new SearchXlogParams(
+                    from, now, null, fragment, null, null, null, null, null, false, 5));
+            System.err.println("[smoke-fuzzy] objNameLike='" + abbreviate(fragment)
+                    + "' rows=" + res.rows().size() + " examined=" + res.examined());
+            // NOT_FOUND must not be thrown for an existing objName; empty rows are fine (no traffic).
+            assertThat(res).isNotNull();
         }
     }
 

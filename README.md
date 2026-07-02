@@ -81,19 +81,29 @@ The AI then orchestrates across the collectors.
 
 | Name | Purpose | Key inputs |
 |---|---|---|
-| `list_objects` | List objects/agents | `objType?`, `nameLike?` |
-| `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objHash?`, `service?`, `login?`, `ip?`, `desc?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
+| `list_objects` | List objects/agents | `objType?`, `nameLike?` (case-insensitive) |
+| `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objNameLike?`, `objHash?`, `service?`, `login?`, `ip?`, `desc?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
 | `get_service_summary` | Per-service aggregate (count/avg/max/p95/errorRate), top 50 | `from`, `to`, same filters as `search_xlog` |
 | `get_xlog_detail` | XLog detail (SQL/bind params) | `txid`, `date?`/`at?`, `includeBindParams?` (default true) |
 | `get_xlog_by_gxid` | Distributed-transaction group | `gxid`, `date?`/`at?` |
-| `get_counter` | Counter time series | `objHashes`\|`objType`, `counter`, `from`, `to` |
+| `get_counter` | Counter time series | `objNameLike`\|`objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | Available counters for an objType | `objType` |
 | `list_alerts` | Past collector alerts | `from`, `to`, `level?`, `object?`, `key?`, `limit?` |
-| `get_active_services` | Services running right now | `objType`\|`objHash` |
+| `get_active_services` | Services running right now | `objNameLike`\|`objType`\|`objHash` |
+
+### Fuzzy targeting (`objNameLike`)
+
+Users say app-name fragments ("shop-order-api"), but real objNames embed the k8s pod name
+(`/shop-order-api-deployment-5f4b8c7d9-abcde/shop-order-api1`), so objHash changes on every deploy
+and an app spans multiple instances. `objNameLike` solves this: a case-insensitive fragment is
+resolved to **all** matching instances (alive first, capped at 20) and queried across them — no
+objHash needed, ever. If nothing matches, the error is `NOT_FOUND` with a `candidates` hint listing
+actual objNames so the caller can self-correct in one step.
 
 `service`/`login`/`ip`/`desc` use substring match by default (server-side `StrMatch`), so a short token
 like `search-order-info-grade` matches `/api/order/ext/order-info/search-order-info-grade<POST>`.
-`login`/`ip`/`desc` also count as server-side filters, so they relax the 5-minute unfiltered-window cap.
+`objNameLike`/`login`/`ip`/`desc` count as server-side filters, so they relax the 5-minute
+unfiltered-window cap.
 
 All tools are advertised with `readOnlyHint`. A `diagnose_root_cause` MCP prompt exposes the
 recommended tool order for latency/error investigations.

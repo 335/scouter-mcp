@@ -22,6 +22,12 @@ public final class Limits {
     public static final int SEARCH_SCAN_CAP = 5000;
     /** Maximum query window allowed when there is no server-side filter such as service/objHash (5 minutes). */
     public static final long UNFILTERED_MAX_WINDOW_MS = 5L * 60 * 1000;
+    /**
+     * Max object instances an objNameLike target may resolve to per query. A k8s app resolves to one
+     * objHash per pod (replicas + rotated pods from past deploys), each queried with its own
+     * server-side-filtered pass; this bounds the per-request fan-out. Alive instances are kept first.
+     */
+    public static final int SEARCH_MAX_OBJ = 20;
     /** Absolute maximum query window regardless of filtering (24 hours). */
     public static final long ABS_MAX_WINDOW_MS = 24L * 60 * 60 * 1000;
 

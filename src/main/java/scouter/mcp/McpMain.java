@@ -42,9 +42,15 @@ public final class McpMain {
     private static final String DIAGNOSE_PLAYBOOK = """
             Use these Scouter MCP tools in order to find the root cause of a latency or error incident.
 
-            1. list_objects — find the objHash/objName of the target agent(s).
-            2. search_xlog — find slow or failing transactions. Filter by service (substring), objHash, login,
-               or ip; set onlyError=true and/or minElapsedMs. Each row carries txid/gxid/objName/endTimeIso.
+            0. Targeting: users say app-name fragments ("shop-order-api"), never objHash — objHash embeds the
+               k8s pod name and changes every deploy. Pass the fragment as objNameLike directly (search_xlog,
+               get_service_summary, get_counter, get_active_services all accept it and fan out over every
+               matching instance). Do NOT ask the user for an objHash, and do not pre-call list_objects just
+               to resolve one. If objNameLike matches nothing, the error returns candidate objNames — pick
+               the closest and retry.
+            1. list_objects — only for discovery ("what is running?"); nameLike is case-insensitive.
+            2. search_xlog — find slow or failing transactions. Filter by objNameLike + service (substring),
+               login, or ip; set onlyError=true and/or minElapsedMs. Rows carry txid/gxid/objName/endTimeIso.
             3. get_service_summary — for "which API got slow", aggregate count/avg/max/p95/errorRate over a
                window without pulling raw rows (no scan-cap penalty).
             4. get_xlog_detail(txid, at=endTimeIso) — inspect SQL/bind params/profile steps/errors for one
@@ -54,8 +60,8 @@ public final class McpMain {
             7. list_alerts / get_active_services — check what fired, and what is running right now (hangs/backlog).
             8. Cross-correlate: take objName + endTimeIso window + txid/gxid and search OpenSearch/Datadog logs.
 
-            Tips: prefer narrow windows and server-side filters (service/objHash/login/ip) to avoid the scan cap.
-            Watch truncated/scanCapReached/hint in results and narrow instead of refetching.
+            Tips: prefer narrow windows and server-side filters (objNameLike/service/login/ip) to avoid the
+            scan cap. Watch truncated/scanCapReached/hint in results and narrow instead of refetching.
             """;
 
     private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {
@@ -126,10 +132,14 @@ public final class McpMain {
                         Map<String, Object> arguments = request.arguments();
                         List<Integer> objHashes = asIntList(arguments, "objHashes");
                         String objType = asString(arguments, "objType");
-                        if (objHashes.isEmpty() && objType == null) {
+                        String objNameLike = asString(arguments, "objNameLike");
+                        if (objHashes.isEmpty() && objType == null && objNameLike == null) {
                             throw scouter.mcp.error.McpError.of(
                                     scouter.mcp.error.McpError.Code.INVALID_INPUT,
                                     Messages.get(config.locale(), "error.counter_obj_required"));
+                        }
+                        if (objHashes.isEmpty() && objNameLike != null) {
+                            objHashes = resolveObjHashesByNameLike(client, objNameLike, config);
                         }
                         if (objHashes.isEmpty() && objType != null) {
                             objHashes = resolveObjHashesByType(client, objType);
@@ -204,7 +214,7 @@ public final class McpMain {
                 .build();
 
         McpSchema.Tool searchXlog = readOnlyTool(jsonMapper, "search_xlog",
-                "Search XLogs (transactions). from/to required. At production traffic, without a service or objHash filter only windows up to 5 minutes are allowed, and results are partial once the scan cap is hit (check truncated/hint). Prefer narrowing by service (substring match) or objHash.",
+                "Search XLogs (transactions). from/to required. Target an app with objNameLike (fuzzy app-name fragment, e.g. 'shop-order-api' — resolved to all instances; no need to know objHash). At production traffic, without a filter (objNameLike/service/login/ip) only windows up to 5 minutes are allowed, and results are partial once the scan cap is hit (check truncated/hint).",
                 Schemas.SEARCH_XLOG);
 
         McpServerFeatures.SyncToolSpecification searchXlogSpec = McpServerFeatures.SyncToolSpecification.builder()
@@ -216,6 +226,7 @@ public final class McpMain {
                         long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
                         long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
                         Long objHash = asLong(arguments, "objHash");
+                        String objNameLike = asString(arguments, "objNameLike");
                         String service = asString(arguments, "service");
                         String login = asString(arguments, "login");
                         String ip = asString(arguments, "ip");
@@ -224,7 +235,7 @@ public final class McpMain {
                         boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
                         int limit = clampLimit(asInteger(arguments, "limit"));
                         SearchXlogParams params = new SearchXlogParams(
-                                fromMillis, toMillis, objHash, service, login, ip, desc,
+                                fromMillis, toMillis, objHash, objNameLike, service, login, ip, desc,
                                 minElapsedMs, onlyError, limit);
                         String json = Tools.renderSearchXlog(config.locale(), client, params);
                         return McpSchema.CallToolResult.builder()
@@ -243,7 +254,7 @@ public final class McpMain {
                 .build();
 
         McpSchema.Tool getServiceSummary = readOnlyTool(jsonMapper, "get_service_summary",
-                "Aggregate XLogs per service over a window: count/errorCount/errorRate/avgMs/maxMs/p95Ms, top 50 by count. Retains no raw rows and uses a higher scan cap, so it covers wider windows cheaply. Same filters as search_xlog (service/objHash/login/ip/desc/minElapsedMs/onlyError). Best first step for 'which API got slow or errored'.",
+                "Aggregate XLogs per service over a window: count/errorCount/errorRate/avgMs/maxMs/p95Ms, top 50 by count. Retains no raw rows and uses a higher scan cap, so it covers wider windows cheaply. Target an app with objNameLike (fuzzy fragment; all instances). Same filters as search_xlog (service/login/ip/desc/minElapsedMs/onlyError). Best first step for 'which API got slow or errored'.",
                 Schemas.SERVICE_SUMMARY);
 
         McpServerFeatures.SyncToolSpecification getServiceSummarySpec = McpServerFeatures.SyncToolSpecification.builder()
@@ -255,6 +266,7 @@ public final class McpMain {
                         long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
                         long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
                         Long objHash = asLong(arguments, "objHash");
+                        String objNameLike = asString(arguments, "objNameLike");
                         String service = asString(arguments, "service");
                         String login = asString(arguments, "login");
                         String ip = asString(arguments, "ip");
@@ -262,7 +274,7 @@ public final class McpMain {
                         Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
                         boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
                         SearchXlogParams params = new SearchXlogParams(
-                                fromMillis, toMillis, objHash, service, login, ip, desc,
+                                fromMillis, toMillis, objHash, objNameLike, service, login, ip, desc,
                                 minElapsedMs, onlyError, 0);
                         String json = Tools.renderServiceSummary(config.locale(), client, params);
                         return McpSchema.CallToolResult.builder().addTextContent(json).build();
@@ -377,7 +389,7 @@ public final class McpMain {
                 .build();
 
         McpSchema.Tool getActiveServices = readOnlyTool(jsonMapper, "get_active_services",
-                "List services currently running on an agent right now (OBJECT_ACTIVE_SERVICE_LIST). One of objType/objHash is required. Use to diagnose live hangs/backlog (long-running threads, stuck SQL).",
+                "List services currently running on an agent right now (OBJECT_ACTIVE_SERVICE_LIST). One of objNameLike/objType/objHash is required — prefer objNameLike (fuzzy app-name fragment; queries all alive instances). Use to diagnose live hangs/backlog (long-running threads, stuck SQL).",
                 Schemas.ACTIVE_SERVICES);
 
         McpServerFeatures.SyncToolSpecification getActiveServicesSpec = McpServerFeatures.SyncToolSpecification.builder()
@@ -387,12 +399,13 @@ public final class McpMain {
                         Map<String, Object> arguments = request.arguments();
                         String objType = asString(arguments, "objType");
                         Long objHash = asLong(arguments, "objHash");
-                        if (objType == null && objHash == null) {
+                        String objNameLike = asString(arguments, "objNameLike");
+                        if (objType == null && objHash == null && objNameLike == null) {
                             throw scouter.mcp.error.McpError.of(
                                     scouter.mcp.error.McpError.Code.INVALID_INPUT,
-                                    "one of objType/objHash is required");
+                                    "one of objType/objHash/objNameLike is required");
                         }
-                        String json = Tools.renderActiveServices(config.locale(), client, objType, objHash);
+                        String json = Tools.renderActiveServices(config.locale(), client, objType, objHash, objNameLike);
                         return McpSchema.CallToolResult.builder().addTextContent(json).build();
                     } catch (scouter.mcp.error.McpError e) {
                         return toolError(e);
@@ -536,6 +549,23 @@ public final class McpMain {
         client.listObjects().stream()
                 .filter(o -> objType.equalsIgnoreCase(o.objType()))
                 .forEach(o -> out.add(o.objHash()));
+        return out;
+    }
+
+    // Fuzzy app-name resolution for get_counter (users say "shop-order-api", never an objHash —
+    // it embeds the pod name and changes every deploy). Fails as NOT_FOUND with candidates.
+    private static List<Integer> resolveObjHashesByNameLike(ScouterClient client, String objNameLike, Config config) {
+        var all = client.listObjects();
+        var matched = scouter.mcp.scouter.TargetResolver.match(all, objNameLike);
+        if (matched.isEmpty()) {
+            throw scouter.mcp.error.McpError.of(
+                            scouter.mcp.error.McpError.Code.NOT_FOUND,
+                            Messages.get(config.locale(), "error.target_not_found", objNameLike.trim()))
+                    .withHint("candidates",
+                            String.join(", ", scouter.mcp.scouter.TargetResolver.suggest(all, 10)));
+        }
+        List<Integer> out = new ArrayList<>();
+        matched.forEach(o -> out.add(o.objHash()));
         return out;
     }
 }

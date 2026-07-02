@@ -34,9 +34,11 @@ public final class Tools {
     }
 
     public static String renderListObjects(ScouterClient client, String objType, String nameLike) {
+        // nameLike matches case-insensitively: users quote app-name fragments, not exact pod names.
+        String needle = nameLike == null ? null : nameLike.toLowerCase();
         List<SObjectDto> objects = client.listObjects().stream()
                 .filter(o -> objType == null || objType.equalsIgnoreCase(o.objType()))
-                .filter(o -> nameLike == null || o.objName().contains(nameLike))
+                .filter(o -> needle == null || (o.objName() != null && o.objName().toLowerCase().contains(needle)))
                 .collect(Collectors.toList());
         try {
             return MAPPER.writeValueAsString(Map.of("count", objects.size(), "objects", objects));
@@ -164,8 +166,9 @@ public final class Tools {
         }
     }
 
-    public static String renderActiveServices(Locale locale, ScouterClient client, String objType, Long objHash) {
-        List<ActiveServiceDto> active = client.getActiveServices(objType, objHash);
+    public static String renderActiveServices(Locale locale, ScouterClient client, String objType, Long objHash,
+                                              String objNameLike) {
+        List<ActiveServiceDto> active = client.getActiveServices(objType, objHash, objNameLike);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("count", active.size());
         result.put("services", active);

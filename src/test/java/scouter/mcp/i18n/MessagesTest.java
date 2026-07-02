@@ -11,8 +11,9 @@ class MessagesTest {
     @Test
     void resolvesEnglishAndKorean() {
         assertThat(Messages.get(Locale.ENGLISH, "error.counter_obj_required"))
-                .isEqualTo("Either objHashes or objType is required");
+                .isEqualTo("One of objNameLike, objHashes, or objType is required");
         assertThat(Messages.get(Locale.KOREAN, "error.counter_obj_required"))
+                .contains("objNameLike")
                 .contains("objHashes")
                 .contains("objType");
         // The two locales must produce different text for the same key.

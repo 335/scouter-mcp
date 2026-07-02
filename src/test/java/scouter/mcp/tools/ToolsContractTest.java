@@ -63,7 +63,7 @@ class ToolsContractTest {
         when(client.getServiceSummary(any())).thenReturn(res);
 
         String json = Tools.renderServiceSummary(Locale.ENGLISH, client,
-                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, null, null, null, null, false, 0));
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, null, null, null, null, null, false, 0));
 
         assertThat(json).contains("/api/order");
         assertThat(json).contains("\"p95Ms\":780");
@@ -87,9 +87,9 @@ class ToolsContractTest {
     @Test
     void activeServicesToolEmptyAddsHint() {
         ScouterClient client = mock(ScouterClient.class);
-        when(client.getActiveServices(isNull(), eq(7L))).thenReturn(List.of());
+        when(client.getActiveServices(isNull(), eq(7L), isNull())).thenReturn(List.of());
 
-        String json = Tools.renderActiveServices(Locale.ENGLISH, client, null, 7L);
+        String json = Tools.renderActiveServices(Locale.ENGLISH, client, null, 7L, null);
 
         assertThat(json).contains("\"count\":0");
         assertThat(json).contains("hint");

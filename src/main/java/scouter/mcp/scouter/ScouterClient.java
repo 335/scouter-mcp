@@ -41,7 +41,8 @@ public interface ScouterClient extends AutoCloseable {
     List<AlertDto> getAlerts(long fromMillis, long toMillis, String level, String object, String key, int limit);
 
     // Currently-running services on an agent/objType (OBJECT_ACTIVE_SERVICE_LIST). Real-time snapshot.
-    List<ActiveServiceDto> getActiveServices(String objType, Long objHash);
+    // objNameLike is a fuzzy app-name fragment resolved to alive instances (objType/objHash win if set).
+    List<ActiveServiceDto> getActiveServices(String objType, Long objHash, String objNameLike);
 
     @Override
     void close();

@@ -230,6 +230,7 @@ public final class TcpScouterClient implements ScouterClient {
                     .withHint("maxSec", String.valueOf(Limits.ABS_MAX_WINDOW_MS / 1000));
         }
         boolean serverFilter = (params.objHash() != null && params.objHash() != 0L)
+                || (params.objNameLike() != null && !params.objNameLike().isBlank())
                 || (params.service() != null && !params.service().isBlank())
                 || (params.login() != null && !params.login().isBlank())
                 || (params.ip() != null && !params.ip().isBlank())
@@ -252,6 +253,43 @@ public final class TcpScouterClient implements ScouterClient {
         return svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
     }
 
+    /**
+     * Turn the caller's object constraint into the concrete objHash list to query.
+     * Explicit objHash wins; otherwise objNameLike is fuzzy-resolved to every matching instance
+     * (alive first, capped at SEARCH_MAX_OBJ); no constraint yields [null] (single unfiltered pass).
+     * An unresolvable objNameLike fails fast as NOT_FOUND with candidate names, so the caller can
+     * self-correct in one step instead of scanning nothing.
+     */
+    private List<Long> resolveTargetHashes(Long objHash, String objNameLike) {
+        if (objHash != null && objHash != 0L) {
+            List<Long> one = new ArrayList<>();
+            one.add(objHash);
+            return one;
+        }
+        if (objNameLike == null || objNameLike.isBlank()) {
+            List<Long> none = new ArrayList<>();
+            none.add(null);
+            return none;
+        }
+        List<SObjectDto> all = listObjectsImpl();
+        List<SObjectDto> matched = TargetResolver.match(all, objNameLike);
+        if (matched.isEmpty()) {
+            throw McpError.of(McpError.Code.NOT_FOUND,
+                            Messages.get(config.locale(), "error.target_not_found", objNameLike.trim()))
+                    .withHint("candidates", String.join(", ", TargetResolver.suggest(all, 10)));
+        }
+        if (matched.size() > Limits.SEARCH_MAX_OBJ) {
+            log.warn("objNameLike matched too many instances, capping: query={}, matched={}, cap={}",
+                    objNameLike.trim(), matched.size(), Limits.SEARCH_MAX_OBJ);
+            matched = matched.subList(0, Limits.SEARCH_MAX_OBJ);
+        }
+        List<Long> hashes = new ArrayList<>(matched.size());
+        for (SObjectDto o : matched) {
+            hashes.add((long) o.objHash());
+        }
+        return hashes;
+    }
+
     private XlogSearchResult searchXlogImpl(SearchXlogParams params) {
         // Ported from webapp XLogConsumer.searchXLogList: SEARCH_XLOG_LIST.
         // Policy (Limits): to defend against the production firehose, validate the window/filters and,
@@ -260,22 +298,26 @@ public final class TcpScouterClient implements ScouterClient {
         validateSearchWindow(params);
 
         String servicePattern = buildServicePattern(params.service());
-        Long objHash = (params.objHash() != null && params.objHash() != 0L) ? params.objHash() : null;
+        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike());
 
         final int limit = params.limit() <= 0
                 ? Limits.SEARCH_DEFAULT_LIMIT
                 : Math.min(params.limit(), Limits.SEARCH_MAX_LIMIT);
 
-        // Streaming state, accumulated across per-day segments. The collector partitions XLogs by day, so a
-        // window crossing midnight must be queried day by day (DaySplitter); limit and scan cap are global.
+        // Streaming state, accumulated across per-day segments and per-instance passes. The collector
+        // partitions XLogs by day (DaySplitter) and filters by a single objHash per pass, so a fuzzy
+        // target (k8s app -> many pods) fans out over instances; limit and scan cap stay global.
         final List<XLogPack> kept = new ArrayList<>();
         final int[] examined = {0};
         final boolean[] stoppedByLimit = {false};
 
-        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
-            boolean stop = scanXlogSegment(seg, objHash, servicePattern, params, limit, kept, examined, stoppedByLimit);
-            if (stop) {
-                break;
+        outer:
+        for (Long hash : targetHashes) {
+            for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+                boolean stop = scanXlogSegment(seg, hash, servicePattern, params, limit, kept, examined, stoppedByLimit);
+                if (stop) {
+                    break outer;
+                }
             }
         }
 
@@ -389,7 +431,7 @@ public final class TcpScouterClient implements ScouterClient {
         // keeping the response to a few dozen lines. Scan cap is higher since no rows are held.
         validateSearchWindow(params);
         String servicePattern = buildServicePattern(params.service());
-        Long objHash = (params.objHash() != null && params.objHash() != 0L) ? params.objHash() : null;
+        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike());
         Integer minElapsed = params.minElapsedMs();
         boolean onlyError = params.onlyError();
 
@@ -397,7 +439,17 @@ public final class TcpScouterClient implements ScouterClient {
         int[] examined = {0};
         boolean[] capped = {false};
 
-        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+        record Pass(Long hash, DaySplitter.Segment seg) {
+        }
+        List<Pass> passes = new ArrayList<>();
+        for (Long hash : targetHashes) {
+            for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+                passes.add(new Pass(hash, seg));
+            }
+        }
+        for (Pass qp : passes) {
+            Long objHash = qp.hash();
+            DaySplitter.Segment seg = qp.seg();
             MapPack param = new MapPack();
             param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
             param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
@@ -679,11 +731,39 @@ public final class TcpScouterClient implements ScouterClient {
     }
 
     @Override
-    public List<ActiveServiceDto> getActiveServices(String objType, Long objHash) {
-        return SessionRetry.execute(() -> getActiveServicesImpl(objType, objHash), this::relogin);
+    public List<ActiveServiceDto> getActiveServices(String objType, Long objHash, String objNameLike) {
+        return SessionRetry.execute(() -> getActiveServicesResolved(objType, objHash, objNameLike), this::relogin);
     }
 
-    private List<ActiveServiceDto> getActiveServicesImpl(String objType, Long objHash) {
+    private List<ActiveServiceDto> getActiveServicesResolved(String objType, Long objHash, String objNameLike) {
+        if ((objType != null && !objType.isBlank()) || (objHash != null && objHash != 0L)) {
+            String objName = objHash != null && objHash != 0L ? buildObjNameMap().get(objHash.intValue()) : null;
+            return getActiveServicesImpl(objType, objHash, objName);
+        }
+        // Fuzzy target: this is a live snapshot, so only alive instances are queried (dead pods have no threads).
+        List<SObjectDto> all = listObjectsImpl();
+        List<SObjectDto> alive = new ArrayList<>();
+        for (SObjectDto o : TargetResolver.match(all, objNameLike)) {
+            if (o.alive()) {
+                alive.add(o);
+            }
+        }
+        if (alive.isEmpty()) {
+            throw McpError.of(McpError.Code.NOT_FOUND,
+                            Messages.get(config.locale(), "error.target_not_found", String.valueOf(objNameLike).trim()))
+                    .withHint("candidates", String.join(", ", TargetResolver.suggest(all, 10)));
+        }
+        if (alive.size() > Limits.SEARCH_MAX_OBJ) {
+            alive = alive.subList(0, Limits.SEARCH_MAX_OBJ);
+        }
+        List<ActiveServiceDto> out = new ArrayList<>();
+        for (SObjectDto o : alive) {
+            out.addAll(getActiveServicesImpl(null, (long) o.objHash(), o.objName()));
+        }
+        return out;
+    }
+
+    private List<ActiveServiceDto> getActiveServicesImpl(String objType, Long objHash, String objName) {
         // OBJECT_ACTIVE_SERVICE_LIST: MapPack{objType|objHash} -> MapPack(s) of parallel ListValues.
         MapPack param = new MapPack();
         if (objType != null && !objType.isBlank()) {
@@ -715,7 +795,7 @@ public final class TcpScouterClient implements ScouterClient {
                 int n = id != null ? id.size() : 0;
                 for (int i = 0; i < n; i++) {
                     out.add(new ActiveServiceDto(
-                            lvLong(id, i), lvStr(name, i), lvStr(stat, i), lvLong(cpu, i), lvStr(txid, i),
+                            objName, lvLong(id, i), lvStr(name, i), lvStr(stat, i), lvLong(cpu, i), lvStr(txid, i),
                             lvStr(service, i), lvStr(ip, i), lvLong(elapsed, i),
                             lvStr(sql, i), lvStr(subcall, i), lvStr(login, i), lvStr(desc, i)));
                 }
