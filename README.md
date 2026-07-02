@@ -77,19 +77,24 @@ two collectors at once. For multiple collectors — which usually differ in thei
 
 The AI then orchestrates across the collectors.
 
-## Tools (9)
+## Tools (14)
 
 | Name | Purpose | Key inputs |
 |---|---|---|
 | `list_objects` | List objects/agents | `objType?`, `nameLike?` (case-insensitive) |
 | `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objNameLike?`, `objHash?`, `service?`, `login?`, `ip?`, `desc?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
 | `get_service_summary` | Per-service aggregate (count/avg/max/p95/errorRate), top 50 | `from`, `to`, same filters as `search_xlog` |
+| `get_summary` | Collector's daily pre-aggregated stats (top-50 SQL/service/error/... — no scanning) | `category` (service/sql/apiCall/ip/userAgent/error/alert), `from`, `to` (up to 31 days), `objType?`, `objNameLike?`, `objHash?` |
 | `get_xlog_detail` | XLog detail (SQL/bind params) | `txid`, `date?`/`at?`, `includeBindParams?` (default true) |
 | `get_xlog_by_gxid` | Distributed-transaction group | `gxid`, `date?`/`at?` |
-| `get_counter` | Counter time series | `objNameLike`\|`objHashes`\|`objType`, `counter`, `from`, `to` |
+| `get_counter` | Counter time series (same-day, full resolution) | `objNameLike`\|`objHashes`\|`objType`, `counter`, `from`, `to` |
+| `get_counter_stat` | Long-range counter stats (5-min resolution, up to 31 days) | `objNameLike`\|`objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | Available counters for an objType | `objType` |
 | `list_alerts` | Past collector alerts | `from`, `to`, `level?`, `object?`, `key?`, `limit?` |
 | `get_active_services` | Services running right now | `objNameLike`\|`objType`\|`objHash` |
+| `list_threads` | JVM thread list (state histogram + top 50 by cpu) | `objNameLike`\|`objHash` (max 5 alive instances) |
+| `get_thread_detail` | Live thread of an ACTIVE transaction (stack/lock owner/current SQL) | `txid` (required, active), `id?`, `objNameLike`\|`objHash` |
+| `get_object_env` | Agent JVM system properties (secrets masked) | `objNameLike`\|`objHash`, `keyLike?` |
 
 ### Fuzzy targeting (`objNameLike`)
 
@@ -138,6 +143,17 @@ enforces guardrails (see `scouter.mcp.policy.Limits`):
   min/max scheme that preserves spikes/dips (summary `min`/`max`/`avg` are computed from the full series).
 - Windows crossing midnight are split per calendar day (the collector partitions XLogs/counters/alerts
   by day), so no data is lost on either side of the boundary.
+- Response text budgets: SQL text is cut at 1,500 chars, error messages at 500, thread stack traces at
+  4,000, env values at 500 — each with a truncation marker carrying the original length. `get_xlog_detail`
+  profile steps are capped at 150, signalled via `totalSteps`/`stepsTruncated`.
+- A single request may fan out to at most 40 collector round-trips (instances x day segments). When
+  client-side filters (`minElapsedMs`/`onlyError`) discard over 99% of scanned rows, a low-selectivity
+  hint steers the model toward server-side filters or `get_summary`.
+- `get_summary`/`get_counter_stat` read the collector's daily pre-aggregated data (no scanning), capped at
+  31 days; summary returns the top 50 rows per category. `list_threads` caps at 5 alive instances and 50
+  thread rows each (the state histogram always covers all threads).
+- Per-request telemetry (passes/examined/kept/tookMs) is logged to stderr as structured `key=value` lines
+  for post-hoc load analysis.
 
 ## Internationalization
 
@@ -154,7 +170,10 @@ structured stderr logs (`key=value`) remain English for a stable contract and lo
   session token, and all XLog/counter data cross the wire unencrypted. Run only inside a trusted network,
   or tunnel over SSH/VPN. Do not expose the collector port over the public internet.
 - `get_xlog_detail` bind parameters can contain PII. Set `SCOUTER_INCLUDE_BIND_PARAMS=false` to strip
-  them server-side (the LLM cannot re-enable them). See the env table above.
+  them server-side (the LLM cannot re-enable them). See the env table above. `get_thread_detail`'s live
+  bind values (`SQLActiveBindVar`) obey the same kill-switch.
+- `get_object_env` **unconditionally** masks values of keys matching password/secret/token/credential/
+  private — a server-side policy the LLM cannot opt out of.
 - stdout is reserved for JSON-RPC, so all logs go to stderr only.
 
 ## License / Notice

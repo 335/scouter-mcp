@@ -49,16 +49,25 @@ public final class McpMain {
                to resolve one. If objNameLike matches nothing, the error returns candidate objNames — pick
                the closest and retry.
             1. list_objects — only for discovery ("what is running?"); nameLike is case-insensitive.
-            2. search_xlog — find slow or failing transactions. Filter by objNameLike + service (substring),
-               login, or ip; set onlyError=true and/or minElapsedMs. Rows carry txid/gxid/objName/endTimeIso.
-            3. get_service_summary — for "which API got slow", aggregate count/avg/max/p95/errorRate over a
-               window without pulling raw rows (no scan-cap penalty).
-            4. get_xlog_detail(txid, at=endTimeIso) — inspect SQL/bind params/profile steps/errors for one
+            2. get_summary — FIRST for ranking/frequency questions ("which SQL/service/error is worst today"):
+               daily pre-aggregated on the collector, no XLog scanning, up to 31 days. category=error rows
+               carry a sample txid for step 5.
+            3. search_xlog — find specific slow or failing transactions. Filter by objNameLike + service
+               (substring), login, or ip. Rows carry txid/gxid/objName/endTimeIso.
+            4. get_service_summary — per-service aggregate (count/avg/max/p95/errorRate) within a day-scale
+               window; finer time bounds than get_summary's daily grain.
+            5. get_xlog_detail(txid, at=endTimeIso) — inspect SQL/bind params/profile steps/errors for one
                transaction. Pass the row's endTimeIso so the per-day partition date is correct.
-            5. get_xlog_by_gxid(gxid) — expand a distributed transaction across services.
-            6. get_counter / list_counters — confirm blast radius with time series (Cpu, Heap, TPS, error rate).
-            7. list_alerts / get_active_services — check what fired, and what is running right now (hangs/backlog).
-            8. Cross-correlate: take objName + endTimeIso window + txid/gxid and search OpenSearch/Datadog logs.
+            6. get_xlog_by_gxid(gxid) — expand a distributed transaction across services.
+            7. get_counter / get_counter_stat / list_counters — blast radius with time series: get_counter for
+               full resolution within 24h, get_counter_stat for 5-minute stats up to 31 days ("compare with
+               last week").
+            8. Live triage: get_active_services -> list_threads (state histogram + cpu-top rows) ->
+               get_thread_detail(txid[, id]) for the stack trace and lock owner. Thread detail needs an
+               ACTIVE txid — take it from the immediately preceding call and drill down right away.
+            9. get_object_env — JVM flags/timezone/versions when configuration is the suspect.
+            10. list_alerts — what fired; then cross-correlate objName + endTimeIso window + txid/gxid with
+                OpenSearch/Datadog logs.
 
             Tips:
             - service matches request URLs, NOT app names. App name -> objNameLike; URL fragment -> service.
@@ -70,6 +79,10 @@ public final class McpMain {
               (objNameLike/service/login/ip) — windows over 5 minutes require one.
             - Prefer narrow windows and server-side filters to avoid the scan cap. Watch
               truncated/scanCapReached/hint in results and narrow instead of refetching.
+            - minElapsedMs/onlyError are client-side: the collector streams rows before they drop. For
+              "which is slow/erroring" questions prefer get_summary (sql/error) or get_service_summary.
+            - Thread drill-down is a live snapshot: list_threads/get_active_services -> get_thread_detail
+              must be back-to-back; a finished txid returns state="end".
             - This MCP only reads monitoring data from the Scouter collector. The monitored applications
               (their source code) live in their own repositories, not here.
             - Presentation: when relaying results to the user, group them by the dimension that matches
