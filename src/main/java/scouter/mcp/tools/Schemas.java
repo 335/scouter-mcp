@@ -119,6 +119,19 @@ public final class Schemas {
         }
         """;
 
+    public static final String GET_THREAD_DETAIL = """
+        {
+          "type": "object",
+          "properties": {
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment. Resolved to the first alive matching instance. One of objNameLike/objHash is required."},
+            "objHash": {"type": "integer", "description": "Target object hash (advanced; prefer objNameLike)"},
+            "txid": {"type": "string", "description": "ACTIVE transaction id from get_active_services or list_threads rows (decimal or Hexa32). The agent locates the thread by this; a finished txid returns state='end' - fetch a fresh one and retry immediately."},
+            "id": {"type": "integer", "description": "Thread id from list_threads/get_active_services (optional; enables cpu/lock/stack fields)"}
+          },
+          "required": ["txid"]
+        }
+        """;
+
     public static final String GET_XLOG_DETAIL = """
         {
           "type": "object",

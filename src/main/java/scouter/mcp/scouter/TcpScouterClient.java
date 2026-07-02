@@ -37,6 +37,8 @@ import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ServiceSummaryDto;
+import scouter.mcp.policy.Truncate;
+import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.ThreadRowDto;
 import scouter.mcp.scouter.dto.XlogSummaryResult;
@@ -1059,6 +1061,65 @@ public final class TcpScouterClient implements ScouterClient {
             }
         }
         return out;
+    }
+
+    @Override
+    public ThreadDetailDto getThreadDetail(String objNameLike, Long objHash, Long threadId, long txid,
+                                           boolean includeBindParams) {
+        return SessionRetry.execute(
+                () -> getThreadDetailImpl(objNameLike, objHash, threadId, txid, includeBindParams), this::relogin);
+    }
+
+    private ThreadDetailDto getThreadDetailImpl(String objNameLike, Long objHash, Long threadId, long txid,
+                                                boolean includeBindParams) {
+        // OBJECT_THREAD_DETAIL: {objHash, id, txid} -> single MapPack of scalar keys (space-separated names).
+        // The server ignores the request when the "id" key is absent, so id is always sent (0 = let the
+        // agent find the thread by txid). A finished txid yields {"Thread Name":"[No Thread] End","State":"end"}.
+        SObjectDto target = resolveAliveTargets(objNameLike, objHash, 1).get(0);
+        MapPack param = new MapPack();
+        param.put(ParamConstant.OBJ_HASH, target.objHash());
+        param.put("id", threadId != null ? threadId : 0L);
+        param.put("txid", txid);
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            Pack p = tcp.getSingle(RequestCmd.OBJECT_THREAD_DETAIL, param);
+            if (!(p instanceof MapPack mp)) {
+                throw McpError.of(McpError.Code.NOT_FOUND,
+                        Messages.get(config.locale(), "error.thread_detail_empty"));
+            }
+            return new ThreadDetailDto(
+                    target.objHash(), target.objName(),
+                    textOrNull(mp, "Thread Name"), longOrNull(mp, "Thread Id"),
+                    textOrNull(mp, "State"),
+                    Truncate.text(textOrNull(mp, "Stack Trace"), Limits.STACK_TEXT_MAX_CHARS),
+                    longOrNull(mp, "Thread Cpu Time"), longOrNull(mp, "Thread User Time"),
+                    longOrNull(mp, "Blocked Count"), longOrNull(mp, "Blocked Time"),
+                    longOrNull(mp, "Waited Count"), longOrNull(mp, "Waited Time"),
+                    textOrNull(mp, "Lock Name"), longOrNull(mp, "Lock Owner Id"), textOrNull(mp, "Lock Owner Name"),
+                    textOrNull(mp, "Service Txid"), textOrNull(mp, "Service Name"), longOrNull(mp, "Service Elapsed"),
+                    textOrNull(mp, "SQL"),
+                    includeBindParams ? textOrNull(mp, "SQLActiveBindVar") : null,
+                    textOrNull(mp, "Subcall"));
+        } catch (McpError e) {
+            throw e;
+        } catch (Exception e) {
+            if (isEof(e)) {
+                throw McpError.of(McpError.Code.NOT_FOUND,
+                        Messages.get(config.locale(), "error.thread_detail_empty"));
+            }
+            throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    private static String textOrNull(MapPack mp, String key) {
+        String v = mp.getText(key);
+        return v == null || v.isEmpty() ? null : v;
+    }
+
+    private static Long longOrNull(MapPack mp, String key) {
+        return mp.containsKey(key) ? mp.getLong(key) : null;
     }
 
     private static String lvStr(ListValue lv, int i) {

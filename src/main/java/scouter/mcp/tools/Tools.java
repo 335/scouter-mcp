@@ -12,6 +12,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
@@ -284,6 +285,23 @@ public final class Tools {
         result.put("instances", instances);
         if (lists.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.threads_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderThreadDetail(Locale locale, ScouterClient client, String objNameLike,
+                                            Long objHash, Long threadId, long txid, boolean includeBindParams) {
+        ThreadDetailDto d = client.getThreadDetail(objNameLike, objHash, threadId, txid, includeBindParams);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("detail", d);
+        if ("end".equalsIgnoreCase(String.valueOf(d.state()))
+                || (d.threadName() != null && d.threadName().startsWith("[No Thread]"))) {
+            // The txid finished between the listing call and this drill-down: it is a live snapshot only.
+            result.put("hint", Messages.get(locale, "hint.thread_detail_stale"));
         }
         try {
             return MAPPER.writeValueAsString(result);

@@ -173,6 +173,20 @@ class ToolsContractTest {
     }
 
     @Test
+    void threadDetailRendersStackAndHintsWhenStale() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.getThreadDetail(isNull(), eq(1L), eq(11L), eq(77L), eq(true))).thenReturn(
+                new scouter.mcp.scouter.dto.ThreadDetailDto(1, "/pod/app1", "[No Thread] End", null, "end",
+                        null, null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null));
+
+        String json = Tools.renderThreadDetail(Locale.ENGLISH, client, null, 1L, 11L, 77L, true);
+
+        assertThat(json).contains("\"state\":\"end\"");
+        assertThat(json).contains("hint"); // stale txid -> refresh guidance
+    }
+
+    @Test
     void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
         // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.

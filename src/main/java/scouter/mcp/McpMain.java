@@ -486,12 +486,46 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool getThreadDetail = readOnlyTool(jsonMapper, "get_thread_detail",
+                "Inspect one ACTIVE transaction's thread right now: stack trace, thread state, lock owner (who blocks it), cpu/blocked/waited counters, current SQL and bind values, and the service it runs. Live snapshot - take txid (and id) from get_active_services or list_threads and call this immediately; a finished txid returns state='end'. The standard drill-down for hangs and lock contention.",
+                Schemas.GET_THREAD_DETAIL);
+
+        McpServerFeatures.SyncToolSpecification getThreadDetailSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getThreadDetail)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objNameLike = asString(arguments, "objNameLike");
+                        Long objHash = asLong(arguments, "objHash");
+                        if (objNameLike == null && objHash == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "one of objNameLike/objHash is required");
+                        }
+                        long txid = requireLong(arguments, "txid");
+                        Long threadId = asLong(arguments, "id");
+                        // Operator bind kill-switch also governs the live SQLActiveBindVar field.
+                        String json = Tools.renderThreadDetail(config.locale(), client, objNameLike, objHash,
+                                threadId, txid, config.bindParamsEnabled());
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
-                        listAlertsSpec, getActiveServicesSpec, listThreadsSpec)
+                        listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 

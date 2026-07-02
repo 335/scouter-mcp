@@ -6,6 +6,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
@@ -48,6 +49,11 @@ public interface ScouterClient extends AutoCloseable {
     // JVM thread list per instance (OBJECT_THREAD_LIST). Live snapshot; fuzzy targets resolve to
     // alive instances only (the collector relays to the agent), capped at Limits.THREAD_MAX_OBJ.
     List<ThreadListDto> listThreads(String objNameLike, Long objHash);
+
+    // Live thread detail for an ACTIVE transaction (OBJECT_THREAD_DETAIL). The java agent locates the
+    // thread by txid; threadId is optional. includeBindParams=false clears SQLActiveBindVar.
+    ThreadDetailDto getThreadDetail(String objNameLike, Long objHash, Long threadId, long txid,
+                                    boolean includeBindParams);
 
     @Override
     void close();
