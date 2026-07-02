@@ -76,6 +76,10 @@ public final class McpMain {
               the question — objType or app for object lists, service for transactions, level for alerts —
               with per-group counts, instead of one long flat list. Pick the grouping from context; a flat
               dump of 50 rows is never the answer.
+            - Labeling: results carry pre-computed 'app' and 'instance' fields — use those as row labels.
+              NEVER shorten an objName yourself by cutting from the front: the trailing hash
+              ("deployment-6576f86784") is meaningless and changes every deploy, while the leading words
+              are the identity. "app (instance)" is the right short form.
             """;
 
     private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {

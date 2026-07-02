@@ -51,11 +51,27 @@ public final class Tools {
         byType.forEach((type, list) -> {
             list.sort((a, b) -> Boolean.compare(b.alive(), a.alive()));
             long alive = list.stream().filter(SObjectDto::alive).count();
+            // Each object carries pre-computed app/instance labels so the model uses them verbatim
+            // instead of truncating the long objName from the wrong end (hash kept, identity lost).
+            List<Map<String, Object>> entries = new ArrayList<>(list.size());
+            for (SObjectDto o : list) {
+                scouter.mcp.scouter.AppLabel.Label label = scouter.mcp.scouter.AppLabel.of(o.objName());
+                Map<String, Object> e = new LinkedHashMap<>();
+                e.put("objHash", o.objHash());
+                e.put("objName", o.objName());
+                e.put("app", label.app());
+                if (label.instance() != null) {
+                    e.put("instance", label.instance());
+                }
+                e.put("address", o.address());
+                e.put("alive", o.alive());
+                entries.add(e);
+            }
             Map<String, Object> group = new LinkedHashMap<>();
             group.put("objType", type);
             group.put("total", list.size());
             group.put("alive", (int) alive);
-            group.put("objects", list);
+            group.put("objects", entries);
             types.add(group);
         });
         types.sort((a, b) -> Integer.compare((int) b.get("total"), (int) a.get("total")));
@@ -73,6 +89,14 @@ public final class Tools {
     public static String renderGetCounter(Locale locale, ScouterClient client, List<Integer> objHashes,
                                           String counter, long fromMillis, long toMillis) {
         List<CounterSeriesDto> series = client.getCounter(objHashes, counter, fromMillis, toMillis);
+        // objHash alone is unusable as a label: resolve names once so each series carries objName plus
+        // the short app/instance labels (models otherwise truncate long objNames from the wrong end).
+        Map<Integer, String> names = new LinkedHashMap<>();
+        try {
+            client.listObjects().forEach(o -> names.put(o.objHash(), o.objName()));
+        } catch (RuntimeException e) {
+            // Name resolution is cosmetic; series remain usable by objHash.
+        }
         // Downsample each series to bound tokens; high-resolution counters can have tens of thousands of points.
         // Summary stats (count/min/max/avg) are computed from the FULL series before downsampling.
         List<Map<String, Object>> rendered = new ArrayList<>(series.size());
@@ -81,6 +105,15 @@ public final class Tools {
             List<PackMapper.Point> ds = PackMapper.downsample(s.points(), Limits.COUNTER_MAX_POINTS);
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("objHash", s.objHash());
+            String objName = names.get(s.objHash());
+            if (objName != null) {
+                scouter.mcp.scouter.AppLabel.Label label = scouter.mcp.scouter.AppLabel.of(objName);
+                m.put("objName", objName);
+                m.put("app", label.app());
+                if (label.instance() != null) {
+                    m.put("instance", label.instance());
+                }
+            }
             m.put("count", st.count());
             m.put("min", st.min());
             m.put("max", st.max());
