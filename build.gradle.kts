@@ -54,11 +54,44 @@ tasks.named<JavaExec>("run") {
     standardInput = System.`in`
 }
 
-// fat jar: build/libs/scouter-mcp-0.1.0-all.jar (includes the Main-Class manifest)
-// The .mcpb bundle is assembled only in the release CI (see .github/workflows/release.yml), which
-// wraps this jar with the manifest via the official `mcpb pack`. Local builds just produce the jar.
+// fat jar: build/libs/scouter-mcp-<version>-all.jar (includes the Main-Class manifest)
 tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
     manifest {
         attributes["Main-Class"] = "scouter.mcp.McpMain"
     }
+}
+
+// .mcpb bundle assembly. `version` (this file's single source of truth, overridable via
+// -PappVersion) drives both the jar filename and the manifest's version field, so the two can
+// never drift apart. Used by both local builds (`./gradlew mcpbPack`) and release CI.
+val mcpbStageDir = layout.buildDirectory.dir("mcpb")
+
+val prepareMcpbManifest by tasks.registering(Copy::class) {
+    // Filter closures aren't tracked as task inputs by Gradle, so without this, switching
+    // -PappVersion between runs would silently reuse a stale UP-TO-DATE copy of the manifest.
+    inputs.property("mcpVersion", version.toString())
+    from("mcpb/manifest.json")
+    into(mcpbStageDir)
+    // Regex on the "version" field itself, not a literal placeholder match: safe regardless of
+    // whatever value is currently checked into manifest.json (kept in sync by the release-PR flow).
+    filter { line -> line.replace(Regex("\"version\":\\s*\"[^\"]*\""), "\"version\": \"${version}\"") }
+}
+
+val prepareMcpbJar by tasks.registering(Copy::class) {
+    dependsOn(tasks.shadowJar)
+    from(tasks.shadowJar.flatMap { it.archiveFile })
+    into(mcpbStageDir)
+    rename { "scouter-mcp.jar" }
+}
+
+tasks.register<Exec>("mcpbPack") {
+    dependsOn(prepareMcpbManifest, prepareMcpbJar)
+    val outputFile = layout.buildDirectory.file("libs/scouter-mcp-${version}.mcpb")
+    outputs.file(outputFile)
+    doFirst { outputFile.get().asFile.parentFile.mkdirs() }
+    commandLine(
+        "npx", "-y", "@anthropic-ai/mcpb", "pack",
+        mcpbStageDir.get().asFile.absolutePath,
+        outputFile.get().asFile.absolutePath,
+    )
 }

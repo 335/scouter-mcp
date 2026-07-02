@@ -1,0 +1,66 @@
+name: Prepare Release
+
+# Manually triggered: bump the version in build.gradle.kts and mcpb/manifest.json on a new
+# release/vX.Y.Z branch and open a PR against main. Merging that PR (see tag-on-merge.yml) creates
+# and pushes the vX.Y.Z tag, which triggers release.yml (jar + .mcpb + GitHub Release + MCP registry).
+# Requires repo setting: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests" enabled, so the default GITHUB_TOKEN can open the PR.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.3.0, no leading v)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version format
+        run: |
+          echo "${{ inputs.version }}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "Version must be X.Y.Z (got '${{ inputs.version }}')" >&2
+            exit 1
+          }
+
+      - name: Bump version files
+        run: |
+          VERSION="${{ inputs.version }}"
+          sed -i -E "s/\?: \"[0-9]+\.[0-9]+\.[0-9]+\"/?: \"${VERSION}\"/" build.gradle.kts
+          sed -i -E "s/local default is [0-9]+\.[0-9]+\.[0-9]+/local default is ${VERSION}/" build.gradle.kts
+          sed -i -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"${VERSION}\"/" mcpb/manifest.json
+
+      - name: Fail if nothing changed
+        run: |
+          if git diff --quiet; then
+            echo "No version change detected — is ${{ inputs.version }} already the current version?" >&2
+            exit 1
+          fi
+
+      - name: Create branch and commit
+        run: |
+          VERSION="${{ inputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "release/v${VERSION}"
+          git add build.gradle.kts mcpb/manifest.json
+          git commit -m "chore: release v${VERSION}"
+          git push origin "release/v${VERSION}"
+
+      - name: Open release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          gh pr create \
+            --title "chore: release v${VERSION}" \
+            --body "Merging this PR tags \`v${VERSION}\` at the merge commit (see tag-on-merge.yml), which triggers release.yml: fat jar + .mcpb bundle + GitHub Release + MCP registry publish." \
+            --base main \
+            --head "release/v${VERSION}"

@@ -43,19 +43,14 @@ jobs:
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Build fat jar
-        run: ./gradlew --no-daemon -PappVersion=${{ steps.meta.outputs.version }} test shadowJar
+      - name: Build fat jar and .mcpb bundle
+        run: ./gradlew --no-daemon -PappVersion=${{ steps.meta.outputs.version }} test shadowJar mcpbPack
 
-      - name: Build .mcpb bundle
+      - name: Compute .mcpb sha256
         id: mcpb
         run: |
           VERSION=${{ steps.meta.outputs.version }}
-          mkdir -p mcpb-build
-          # Substitute the manifest version with the tag version
-          sed "s/0\.0\.0/${VERSION}/g" mcpb/manifest.json > mcpb-build/manifest.json
-          cp build/libs/scouter-mcp-${VERSION}-all.jar mcpb-build/scouter-mcp.jar
-          npx -y @anthropic-ai/mcpb pack mcpb-build scouter-mcp-${VERSION}.mcpb
-          SHA=$(openssl dgst -sha256 scouter-mcp-${VERSION}.mcpb | awk '{print $2}')
+          SHA=$(openssl dgst -sha256 build/libs/scouter-mcp-${VERSION}.mcpb | awk '{print $2}')
           echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
@@ -63,7 +58,7 @@ jobs:
         with:
           files: |
             build/libs/scouter-mcp-*-all.jar
-            scouter-mcp-*.mcpb
+            build/libs/scouter-mcp-*.mcpb
           generate_release_notes: true
 
       # --- Publish to the official MCP registry (mcpb) ---
