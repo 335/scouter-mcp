@@ -12,14 +12,17 @@ public final class Config {
     private final String password;
     private final ZoneId zone;
     private final Locale locale;
+    private final boolean bindParamsEnabled;
 
-    private Config(String host, int port, String user, String password, ZoneId zone, Locale locale) {
+    private Config(String host, int port, String user, String password, ZoneId zone, Locale locale,
+                   boolean bindParamsEnabled) {
         this.host = host;
         this.port = port;
         this.user = user;
         this.password = password;
         this.zone = zone;
         this.locale = locale;
+        this.bindParamsEnabled = bindParamsEnabled;
     }
 
     public static Config fromEnv(Map<String, String> env) {
@@ -29,7 +32,12 @@ public final class Config {
         String password = require(env, "SCOUTER_PASSWORD");
         String tz = env.getOrDefault("SCOUTER_TZ", "Asia/Seoul");
         Locale locale = resolveLocale(env.get("SCOUTER_LOCALE"));
-        return new Config(host, port, user, password, ZoneId.of(tz), locale);
+        // Operator-level kill switch (default on). When set to false, SQL bind parameters are never
+        // included in get_xlog_detail output regardless of the per-call includeBindParams argument, so
+        // an LLM cannot opt back in. Defends against sending PII (user IDs, phone, address) to the model.
+        boolean bindParamsEnabled =
+                !"false".equalsIgnoreCase(env.getOrDefault("SCOUTER_INCLUDE_BIND_PARAMS", "true").trim());
+        return new Config(host, port, user, password, ZoneId.of(tz), locale, bindParamsEnabled);
     }
 
     /**
@@ -74,6 +82,10 @@ public final class Config {
 
     public Locale locale() {
         return locale;
+    }
+
+    public boolean bindParamsEnabled() {
+        return bindParamsEnabled;
     }
 
     @Override

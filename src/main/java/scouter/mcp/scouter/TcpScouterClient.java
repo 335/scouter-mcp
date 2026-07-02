@@ -1,9 +1,11 @@
 package scouter.mcp.scouter;
 
 import lombok.extern.slf4j.Slf4j;
+import scouter.lang.AlertLevel;
 import scouter.lang.Counter;
 import scouter.lang.ObjectType;
 import scouter.lang.TextTypes;
+import scouter.lang.pack.AlertPack;
 import scouter.lang.constants.ParamConstant;
 import scouter.lang.counters.CounterEngine;
 import scouter.lang.pack.MapPack;
@@ -11,6 +13,9 @@ import scouter.lang.pack.ObjectPack;
 import scouter.lang.pack.Pack;
 import scouter.lang.pack.XLogPack;
 import scouter.lang.pack.XLogProfilePack;
+import scouter.lang.step.ApiCallStep;
+import scouter.lang.step.MethodStep;
+import scouter.lang.step.SqlStep;
 import scouter.lang.step.Step;
 import scouter.lang.value.BlobValue;
 import scouter.lang.value.ListValue;
@@ -20,21 +25,25 @@ import scouter.mcp.client.LoginMgr;
 import scouter.mcp.client.LoginRequest;
 import scouter.mcp.client.Server;
 import scouter.mcp.client.ServerRegistry;
+import scouter.mcp.client.SessionRetry;
 import scouter.mcp.client.TcpProxy;
 import scouter.mcp.config.Config;
 import scouter.mcp.error.McpError;
 import scouter.mcp.i18n.Messages;
+import scouter.mcp.scouter.dto.ActiveServiceDto;
+import scouter.mcp.scouter.dto.AlertDto;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.ServiceSummaryDto;
+import scouter.mcp.scouter.dto.XlogSummaryResult;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
 import scouter.mcp.policy.Limits;
+import scouter.mcp.time.DaySplitter;
 
-import java.time.Instant;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -77,8 +86,23 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
+    // Re-login recovery for session expiry. LoginMgr.login refreshes the session on the same Server
+    // instance (and re-inits its connection pool); a failed relogin surfaces as SCOUTER_AUTH_FAILED.
+    private void relogin() {
+        log.info("session expired, attempting relogin: host={}", config.host());
+        LoginRequest result = LoginMgr.login(server);
+        if (!result.success || !server.isOpen()) {
+            throw McpError.of(McpError.Code.SCOUTER_AUTH_FAILED, result.getErrorMessage())
+                    .withHint("host", config.host());
+        }
+    }
+
     @Override
     public List<SObjectDto> listObjects() {
+        return SessionRetry.execute(this::listObjectsImpl, this::relogin);
+    }
+
+    private List<SObjectDto> listObjectsImpl() {
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
             List<SObjectDto> out = new ArrayList<>();
@@ -98,21 +122,18 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<CounterSeriesDto> getCounter(List<Integer> objHashes, String counter, long fromMillis, long toMillis) {
+        return SessionRetry.execute(() -> getCounterImpl(objHashes, counter, fromMillis, toMillis), this::relogin);
+    }
+
+    private List<CounterSeriesDto> getCounterImpl(List<Integer> objHashes, String counter, long fromMillis, long toMillis) {
         // Counter data is stored in per-day files, and COUNTER_PAST_TIME_ALL is single-day. Like the upstream
         // CounterConsumer, split [from,to] into per-calendar-day segments (in the configured zone), query each
         // day, and merge points by objHash. Otherwise a window straddling midnight loses data on one side.
         Map<Integer, List<PackMapper.Point>> mergedByObj = new LinkedHashMap<>();
-        ZoneId zone = config.zone();
-        long cursor = fromMillis;
-        while (cursor < toMillis) {
-            long dayEndExclusive = Instant.ofEpochMilli(cursor).atZone(zone).toLocalDate()
-                    .plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli();
-            long segFrom = cursor;
-            long segTo = Math.min(dayEndExclusive - 1, toMillis);
-            for (CounterSeriesDto day : queryCounterDay(objHashes, counter, segFrom, segTo)) {
+        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(fromMillis, toMillis, config.zone())) {
+            for (CounterSeriesDto day : queryCounterDay(objHashes, counter, seg.fromMillis(), seg.toMillis())) {
                 mergedByObj.computeIfAbsent(day.objHash(), k -> new ArrayList<>()).addAll(day.points());
             }
-            cursor = dayEndExclusive;
         }
         List<CounterSeriesDto> out = new ArrayList<>(mergedByObj.size());
         for (Map.Entry<Integer, List<PackMapper.Point>> e : mergedByObj.entrySet()) {
@@ -120,6 +141,8 @@ public final class TcpScouterClient implements ScouterClient {
         }
         return out;
     }
+
+    // (self-note) getCounter/searchXlog day-splitting is centralized in DaySplitter to keep both consistent.
 
     /** Single-day counter query (COUNTER_PAST_TIME_ALL), ported from webapp CounterConsumer.retrieveCounterInDay. */
     private List<CounterSeriesDto> queryCounterDay(List<Integer> objHashes, String counter, long stime, long etime) {
@@ -156,6 +179,10 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public List<CounterMetaDto> listCounters(String objType) {
+        return SessionRetry.execute(() -> listCountersImpl(objType), this::relogin);
+    }
+
+    private List<CounterMetaDto> listCountersImpl(String objType) {
         // Fetch the counter-definition XML (default + custom) via GET_XML_COUNTER and load it into CounterEngine.
         // Response: MapPack { "default": BlobValue, ("custom": BlobValue)? }  (ConfigureService.getCounterXml)
         CounterEngine engine = loadCounterEngine();
@@ -186,10 +213,12 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public XlogSearchResult searchXlog(SearchXlogParams params) {
-        // Ported from webapp XLogConsumer.searchXLogList: SEARCH_XLOG_LIST.
-        // Policy (Limits): to defend against the production firehose, validate the window/filters and,
-        // during streaming, cut the socket once the limit or scan cap is reached so that the collector
-        // scan/transfer and the MCP heap stop together.
+        return SessionRetry.execute(() -> searchXlogImpl(params), this::relogin);
+    }
+
+    // Shared window/filter guard for XLog streaming tools (search + summary). Rejects inverted windows,
+    // windows over the absolute cap, and unfiltered windows over the short cap (firehose defense).
+    private void validateSearchWindow(SearchXlogParams params) {
         long windowMs = params.toMillis() - params.fromMillis();
         if (windowMs <= 0) {
             throw McpError.of(McpError.Code.INVALID_INPUT, Messages.get(config.locale(), "error.from_after_to"));
@@ -201,7 +230,10 @@ public final class TcpScouterClient implements ScouterClient {
                     .withHint("maxSec", String.valueOf(Limits.ABS_MAX_WINDOW_MS / 1000));
         }
         boolean serverFilter = (params.objHash() != null && params.objHash() != 0L)
-                || (params.service() != null && !params.service().isBlank());
+                || (params.service() != null && !params.service().isBlank())
+                || (params.login() != null && !params.login().isBlank())
+                || (params.ip() != null && !params.ip().isBlank())
+                || (params.desc() != null && !params.desc().isBlank());
         if (!serverFilter && windowMs > Limits.UNFILTERED_MAX_WINDOW_MS) {
             throw McpError.of(McpError.Code.INVALID_INPUT,
                             Messages.get(config.locale(), "error.unfiltered_window",
@@ -209,35 +241,80 @@ public final class TcpScouterClient implements ScouterClient {
                     .withHint("windowSec", String.valueOf(windowMs / 1000))
                     .withHint("maxUnfilteredSec", String.valueOf(Limits.UNFILTERED_MAX_WINDOW_MS / 1000));
         }
+    }
 
-        MapPack param = new MapPack();
-        param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(params.fromMillis(), config.zone()));
-        param.put(ParamConstant.XLOG_START_TIME, params.fromMillis());
-        param.put(ParamConstant.XLOG_END_TIME, params.toMillis());
-        if (params.objHash() != null && params.objHash() != 0L) {
-            param.put(ParamConstant.OBJ_HASH, params.objHash());
+    // Wrap a bare service token as a server-side StrMatch substring pattern (*term*); honor explicit '*'.
+    private static String buildServicePattern(String service) {
+        if (service == null || service.isBlank()) {
+            return null;
         }
-        if (params.service() != null && !params.service().isBlank()) {
-            // The collector filters service with StrMatch (scouter.util.StrMatch). A plain string without '*'
-            // is an exact match, so a short token would never match. If the caller did not use '*', wrap it as
-            // a substring match (*term*) so it matches server-side without knowing the full service name.
-            // If '*' is already present, honor the pattern as-is.
-            String svc = params.service().trim();
-            String pattern = svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
-            param.put(ParamConstant.XLOG_SERVICE, pattern);
-        }
+        String svc = service.trim();
+        return svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
+    }
+
+    private XlogSearchResult searchXlogImpl(SearchXlogParams params) {
+        // Ported from webapp XLogConsumer.searchXLogList: SEARCH_XLOG_LIST.
+        // Policy (Limits): to defend against the production firehose, validate the window/filters and,
+        // during streaming, cut the socket once the limit or scan cap is reached so that the collector
+        // scan/transfer and the MCP heap stop together.
+        validateSearchWindow(params);
+
+        String servicePattern = buildServicePattern(params.service());
+        Long objHash = (params.objHash() != null && params.objHash() != 0L) ? params.objHash() : null;
 
         final int limit = params.limit() <= 0
                 ? Limits.SEARCH_DEFAULT_LIMIT
                 : Math.min(params.limit(), Limits.SEARCH_MAX_LIMIT);
-        final Integer minElapsed = params.minElapsedMs();
-        final boolean onlyError = params.onlyError();
 
-        // Streaming: collect matches up to the limit, and stop once the number of examined Packs hits the scan cap.
-        // Text-dictionary round-trips are performed after the socket is closed (kept rows <= limit).
+        // Streaming state, accumulated across per-day segments. The collector partitions XLogs by day, so a
+        // window crossing midnight must be queried day by day (DaySplitter); limit and scan cap are global.
         final List<XLogPack> kept = new ArrayList<>();
         final int[] examined = {0};
         final boolean[] stoppedByLimit = {false};
+
+        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+            boolean stop = scanXlogSegment(seg, objHash, servicePattern, params, limit, kept, examined, stoppedByLimit);
+            if (stop) {
+                break;
+            }
+        }
+
+        boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
+        boolean truncated = stoppedByLimit[0] || scanCapReached;
+
+        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0]);
+    }
+
+    /**
+     * Scan a single per-day segment (SEARCH_XLOG_LIST) into the shared streaming state.
+     * Returns true when scanning should stop entirely (global limit or scan cap reached), so the
+     * caller skips remaining segments. Text-dictionary round-trips happen later (kept rows <= limit).
+     */
+    private boolean scanXlogSegment(DaySplitter.Segment seg, Long objHash, String servicePattern,
+                                    SearchXlogParams params, int limit,
+                                    List<XLogPack> kept, int[] examined, boolean[] stoppedByLimit) {
+        final Integer minElapsed = params.minElapsedMs();
+        final boolean onlyError = params.onlyError();
+
+        MapPack param = new MapPack();
+        param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
+        param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
+        param.put(ParamConstant.XLOG_END_TIME, seg.toMillis());
+        if (objHash != null) {
+            param.put(ParamConstant.OBJ_HASH, objHash);
+        }
+        if (servicePattern != null) {
+            param.put(ParamConstant.XLOG_SERVICE, servicePattern);
+        }
+        if (params.login() != null && !params.login().isBlank()) {
+            param.put(ParamConstant.XLOG_LOGIN, params.login().trim());
+        }
+        if (params.ip() != null && !params.ip().isBlank()) {
+            param.put(ParamConstant.XLOG_IP, params.ip().trim());
+        }
+        if (params.desc() != null && !params.desc().isBlank()) {
+            param.put(ParamConstant.XLOG_DESC, params.desc().trim());
+        }
 
         TcpProxy tcp = TcpProxy.getTcpProxy(server);
         try {
@@ -273,10 +350,137 @@ public final class TcpScouterClient implements ScouterClient {
             TcpProxy.close(tcp);
         }
 
-        boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
-        boolean truncated = stoppedByLimit[0] || scanCapReached;
+        return stoppedByLimit[0] || examined[0] >= Limits.SEARCH_SCAN_CAP;
+    }
 
-        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0]);
+    @Override
+    public XlogSummaryResult getServiceSummary(SearchXlogParams params) {
+        return SessionRetry.execute(() -> getServiceSummaryImpl(params), this::relogin);
+    }
+
+    /** Per-service accumulator. Retains elapsed samples (bounded by the scan cap) for an exact p95. */
+    private static final class ServiceAcc {
+        long count;
+        long errorCount;
+        long sumElapsed;
+        long maxElapsed;
+        long anyYmd;
+        final List<Integer> elapseds = new ArrayList<>();
+
+        void add(int elapsed, boolean error, long ymd) {
+            count++;
+            if (error) {
+                errorCount++;
+            }
+            sumElapsed += elapsed;
+            if (elapsed > maxElapsed) {
+                maxElapsed = elapsed;
+            }
+            elapseds.add(elapsed);
+            if (anyYmd == 0) {
+                anyYmd = ymd;
+            }
+        }
+    }
+
+    private XlogSummaryResult getServiceSummaryImpl(SearchXlogParams params) {
+        // Same SEARCH_XLOG_LIST stream as search_xlog, but rows are folded into per-service counters
+        // instead of retained. This answers "which service got slow/errored" over a wide window while
+        // keeping the response to a few dozen lines. Scan cap is higher since no rows are held.
+        validateSearchWindow(params);
+        String servicePattern = buildServicePattern(params.service());
+        Long objHash = (params.objHash() != null && params.objHash() != 0L) ? params.objHash() : null;
+        Integer minElapsed = params.minElapsedMs();
+        boolean onlyError = params.onlyError();
+
+        Map<Integer, ServiceAcc> byService = new HashMap<>();
+        int[] examined = {0};
+        boolean[] capped = {false};
+
+        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+            MapPack param = new MapPack();
+            param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
+            param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
+            param.put(ParamConstant.XLOG_END_TIME, seg.toMillis());
+            if (objHash != null) {
+                param.put(ParamConstant.OBJ_HASH, objHash);
+            }
+            if (servicePattern != null) {
+                param.put(ParamConstant.XLOG_SERVICE, servicePattern);
+            }
+            if (params.login() != null && !params.login().isBlank()) {
+                param.put(ParamConstant.XLOG_LOGIN, params.login().trim());
+            }
+            if (params.ip() != null && !params.ip().isBlank()) {
+                param.put(ParamConstant.XLOG_IP, params.ip().trim());
+            }
+            if (params.desc() != null && !params.desc().isBlank()) {
+                param.put(ParamConstant.XLOG_DESC, params.desc().trim());
+            }
+
+            TcpProxy tcp = TcpProxy.getTcpProxy(server);
+            try {
+                tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
+                    Pack p = in.readPack();
+                    examined[0]++;
+                    if (p instanceof XLogPack xp) {
+                        boolean pass = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
+                        if (pass) {
+                            long ymd = Long.parseLong(scouter.mcp.time.TimeRange.yyyymmdd(xp.endTime, config.zone()));
+                            byService.computeIfAbsent(xp.service, k -> new ServiceAcc())
+                                    .add(xp.elapsed, xp.error != 0, ymd);
+                        }
+                    }
+                    if (examined[0] >= Limits.SUMMARY_SCAN_CAP) {
+                        capped[0] = true;
+                        throw new StopStreaming();
+                    }
+                });
+            } catch (RuntimeException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+                    if (cause instanceof McpError) {
+                        throw (McpError) cause;
+                    }
+                    throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
+                }
+            } finally {
+                TcpProxy.close(tcp);
+            }
+            if (capped[0]) {
+                break;
+            }
+        }
+
+        return buildSummary(byService, examined[0], capped[0]);
+    }
+
+    private XlogSummaryResult buildSummary(Map<Integer, ServiceAcc> byService, int examined, boolean capped) {
+        // Decode service names in one GET_TEXT_PACK batch per day (objName is not needed here).
+        TextDictionary dict = new TextDictionary(server, null);
+        Map<Long, Set<Integer>> byYmd = new HashMap<>();
+        for (Map.Entry<Integer, ServiceAcc> e : byService.entrySet()) {
+            byYmd.computeIfAbsent(e.getValue().anyYmd, k -> new LinkedHashSet<>()).add(e.getKey());
+        }
+        byYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.SERVICE, ymd, hashes));
+
+        List<ServiceSummaryDto> list = new ArrayList<>(byService.size());
+        int totalCount = 0;
+        for (Map.Entry<Integer, ServiceAcc> e : byService.entrySet()) {
+            ServiceAcc a = e.getValue();
+            totalCount += a.count;
+            String name = dict.service(a.anyYmd, e.getKey());
+            String service = name != null ? name : "#" + e.getKey();
+            double errorRate = a.count == 0 ? 0 : (double) a.errorCount / a.count;
+            double avg = a.count == 0 ? 0 : (double) a.sumElapsed / a.count;
+            long p95 = Percentiles.nearestRank(a.elapseds, 95);
+            list.add(new ServiceSummaryDto(service, a.count, a.errorCount, errorRate, avg, a.maxElapsed, p95));
+        }
+        list.sort((x, y) -> Long.compare(y.count(), x.count())); // top by traffic
+        if (list.size() > Limits.SUMMARY_MAX_SERVICES) {
+            list = new ArrayList<>(list.subList(0, Limits.SUMMARY_MAX_SERVICES));
+        }
+        return new XlogSummaryResult(list, totalCount, capped, examined);
     }
 
     /**
@@ -306,6 +510,10 @@ public final class TcpScouterClient implements ScouterClient {
 
     @Override
     public XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams) {
+        return SessionRetry.execute(() -> getXlogDetailImpl(txid, yyyymmdd, includeBindParams), this::relogin);
+    }
+
+    private XLogDetailDto getXlogDetailImpl(long txid, String yyyymmdd, boolean includeBindParams) {
         // Ported from webapp XLogConsumer.retrieveByTxid + ProfileConsumer.retrieveProfile.
         // 1) XLOG_READ_BY_TXID(getSingle) -> XLogPack summary. 2) TRANX_PROFILE(getSingle) -> XLogProfilePack.profile -> Step[].
         TextDictionary dict = new TextDictionary(server, buildObjNameMap());
@@ -358,11 +566,42 @@ public final class TcpScouterClient implements ScouterClient {
             TcpProxy.close(tcp);
         }
 
+        // Batch-decode SQL/ERROR/METHOD text in one round-trip per type so toDetail hits the cache
+        // instead of a per-step GET_TEXT_PACK round-trip (profiles can have dozens/hundreds of steps).
+        prefetchDetailText(dict, steps, ymd);
+
         return PackMapper.toDetail(summary, steps, ymd, includeBindParams, dict);
+    }
+
+    private void prefetchDetailText(TextDictionary dict, Step[] steps, long ymd) {
+        if (steps == null) {
+            return;
+        }
+        Set<Integer> sqls = new LinkedHashSet<>();
+        Set<Integer> errors = new LinkedHashSet<>();
+        Set<Integer> methods = new LinkedHashSet<>();
+        for (Step s : steps) {
+            if (s instanceof SqlStep sq) {
+                sqls.add(sq.hash);
+            } else if (s instanceof ApiCallStep api) {
+                if (api.error != 0) {
+                    errors.add(api.error);
+                }
+            } else if (s instanceof MethodStep m) {
+                methods.add(m.hash);
+            }
+        }
+        dict.prefetch(TextTypes.SQL, ymd, sqls);
+        dict.prefetch(TextTypes.ERROR, ymd, errors);
+        dict.prefetch(TextTypes.METHOD, ymd, methods);
     }
 
     @Override
     public List<XLogRowDto> getXlogByGxid(long gxid, String yyyymmdd) {
+        return SessionRetry.execute(() -> getXlogByGxidImpl(gxid, yyyymmdd), this::relogin);
+    }
+
+    private List<XLogRowDto> getXlogByGxidImpl(long gxid, String yyyymmdd) {
         // Ported from webapp XLogConsumer.retrieveXLogPacksByGxid: XLOG_READ_BY_GXID(process) -> List<XLogPack>.
         MapPack param = new MapPack();
         param.put(ParamConstant.DATE, yyyymmdd);
@@ -383,6 +622,120 @@ public final class TcpScouterClient implements ScouterClient {
             TcpProxy.close(tcp);
         }
         return mapRows(packs);
+    }
+
+    @Override
+    public List<AlertDto> getAlerts(long fromMillis, long toMillis, String level, String object, String key, int limit) {
+        return SessionRetry.execute(() -> getAlertsImpl(fromMillis, toMillis, level, object, key, limit), this::relogin);
+    }
+
+    private List<AlertDto> getAlertsImpl(long fromMillis, long toMillis, String level, String object, String key, int limit) {
+        // ALERT_LOAD_TIME: MapPack{date, stime, etime, count, level?, object?, key?} -> stream of AlertPack.
+        // Alerts are stored per day, so split the window by calendar day (same as counters/xlogs).
+        if (toMillis - fromMillis <= 0) {
+            throw McpError.of(McpError.Code.INVALID_INPUT, Messages.get(config.locale(), "error.from_after_to"));
+        }
+        int cap = limit <= 0 ? 100 : Math.min(limit, 1000);
+        Map<Integer, String> objNames = buildObjNameMap();
+        List<AlertDto> out = new ArrayList<>();
+        for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(fromMillis, toMillis, config.zone())) {
+            if (out.size() >= cap) {
+                break;
+            }
+            MapPack param = new MapPack();
+            param.put("date", scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
+            param.put("stime", seg.fromMillis());
+            param.put("etime", seg.toMillis());
+            param.put("count", cap);
+            if (level != null && !level.isBlank()) {
+                param.put("level", level.trim().toUpperCase());
+            }
+            if (object != null && !object.isBlank()) {
+                param.put("object", object.trim());
+            }
+            if (key != null && !key.isBlank()) {
+                param.put("key", key.trim());
+            }
+            TcpProxy tcp = TcpProxy.getTcpProxy(server);
+            try {
+                tcp.process(RequestCmd.ALERT_LOAD_TIME, param, in -> {
+                    Pack p = in.readPack();
+                    if (p instanceof AlertPack ap && out.size() < cap) {
+                        String levelName = AlertLevel.getName(ap.level);
+                        String objName = objNames.getOrDefault(ap.objHash, "#" + ap.objHash);
+                        out.add(new AlertDto(ap.time, scouter.mcp.time.TimeRange.toIso(ap.time, config.zone()),
+                                levelName, ap.objType, ap.objHash, objName, ap.title, ap.message));
+                    }
+                });
+            } catch (Exception e) {
+                if (!isEof(e)) {
+                    throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+                }
+            } finally {
+                TcpProxy.close(tcp);
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public List<ActiveServiceDto> getActiveServices(String objType, Long objHash) {
+        return SessionRetry.execute(() -> getActiveServicesImpl(objType, objHash), this::relogin);
+    }
+
+    private List<ActiveServiceDto> getActiveServicesImpl(String objType, Long objHash) {
+        // OBJECT_ACTIVE_SERVICE_LIST: MapPack{objType|objHash} -> MapPack(s) of parallel ListValues.
+        MapPack param = new MapPack();
+        if (objType != null && !objType.isBlank()) {
+            param.put("objType", objType.trim());
+        }
+        if (objHash != null && objHash != 0L) {
+            param.put("objHash", objHash.intValue());
+        }
+        List<ActiveServiceDto> out = new ArrayList<>();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            tcp.process(RequestCmd.OBJECT_ACTIVE_SERVICE_LIST, param, in -> {
+                Pack p = in.readPack();
+                if (!(p instanceof MapPack mp)) {
+                    return;
+                }
+                ListValue id = mp.getList("id");
+                ListValue name = mp.getList("name");
+                ListValue stat = mp.getList("stat");
+                ListValue cpu = mp.getList("cpu");
+                ListValue txid = mp.getList("txid");
+                ListValue service = mp.getList("service");
+                ListValue ip = mp.getList("ip");
+                ListValue elapsed = mp.getList("elapsed");
+                ListValue sql = mp.getList("sql");
+                ListValue subcall = mp.getList("subcall");
+                ListValue login = mp.getList("login");
+                ListValue desc = mp.getList("desc");
+                int n = id != null ? id.size() : 0;
+                for (int i = 0; i < n; i++) {
+                    out.add(new ActiveServiceDto(
+                            lvLong(id, i), lvStr(name, i), lvStr(stat, i), lvLong(cpu, i), lvStr(txid, i),
+                            lvStr(service, i), lvStr(ip, i), lvLong(elapsed, i),
+                            lvStr(sql, i), lvStr(subcall, i), lvStr(login, i), lvStr(desc, i)));
+                }
+            });
+        } catch (Exception e) {
+            if (!isEof(e)) {
+                throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+            }
+        } finally {
+            TcpProxy.close(tcp);
+        }
+        return out;
+    }
+
+    private static String lvStr(ListValue lv, int i) {
+        return lv != null && i < lv.size() ? lv.getString(i) : null;
+    }
+
+    private static long lvLong(ListValue lv, int i) {
+        return lv != null && i < lv.size() ? lv.getLong(i) : 0L;
     }
 
     // process()/getSingle() may wrap the reader's EOFException in a RuntimeException, so inspect the cause chain.
@@ -412,7 +765,7 @@ public final class TcpScouterClient implements ScouterClient {
             return cached;
         }
         Map<Integer, String> map = new HashMap<>();
-        for (SObjectDto o : listObjects()) {
+        for (SObjectDto o : listObjectsImpl()) {
             map.put(o.objHash(), o.objName());
         }
         objNameCache = map;

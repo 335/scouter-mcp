@@ -37,6 +37,23 @@ class ConfigTest {
     }
 
     @Test
+    void bindParamsEnabledByDefault() {
+        Config c = Config.fromEnv(Map.of(
+                "SCOUTER_COLLECTOR_HOST", "h", "SCOUTER_COLLECTOR_PORT", "6100",
+                "SCOUTER_USER", "u", "SCOUTER_PASSWORD", "p"));
+        assertThat(c.bindParamsEnabled()).isTrue();
+    }
+
+    @Test
+    void bindParamsDisabledWhenEnvFalse() {
+        Config c = Config.fromEnv(Map.of(
+                "SCOUTER_COLLECTOR_HOST", "h", "SCOUTER_COLLECTOR_PORT", "6100",
+                "SCOUTER_USER", "u", "SCOUTER_PASSWORD", "p",
+                "SCOUTER_INCLUDE_BIND_PARAMS", "false"));
+        assertThat(c.bindParamsEnabled()).isFalse();
+    }
+
+    @Test
     void overridesTimezone() {
         Config c = Config.fromEnv(Map.of(
                 "SCOUTER_COLLECTOR_HOST", "h", "SCOUTER_COLLECTOR_PORT", "6100",

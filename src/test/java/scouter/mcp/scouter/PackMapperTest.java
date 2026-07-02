@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.within;
 
 class PackMapperTest {
 
@@ -51,11 +50,33 @@ class PackMapperTest {
         }
         List<PackMapper.Point> ds = PackMapper.downsample(pts, 100);
         assertThat(ds).hasSize(100);
-        // First bucket averages 0..99 -> ~49.5; last bucket averages 9900..9999 -> ~9949.5
-        assertThat(ds.get(0).value()).isCloseTo(49.5d, within(1.0d));
-        assertThat(ds.get(99).value()).isCloseTo(9949.5d, within(1.0d));
+        // min/max downsampling: on a monotonic ramp the first bucket's min is 0, the last bucket's max is 9999.
+        assertThat(ds.get(0).value()).isEqualTo(0.0d);
+        assertThat(ds.get(99).value()).isEqualTo(9999.0d);
         // Timestamps are non-decreasing
         assertThat(ds.get(0).timeMillis()).isLessThan(ds.get(99).timeMillis());
+    }
+
+    @Test
+    void downsamplePreservesSpikes() {
+        List<PackMapper.Point> pts = new ArrayList<>();
+        for (int i = 0; i < 10_000; i++) {
+            pts.add(new PackMapper.Point(i, 1.0d)); // flat baseline
+        }
+        pts.set(5_000, new PackMapper.Point(5_000, 999.0d)); // single sharp spike
+        List<PackMapper.Point> ds = PackMapper.downsample(pts, 100);
+        double max = ds.stream().mapToDouble(PackMapper.Point::value).max().orElse(0);
+        // Bucket averaging would smear the spike to ~11; min/max downsampling must keep the true peak.
+        assertThat(max).isEqualTo(999.0d);
+    }
+
+    @Test
+    void downsampleStaysWithinMaxPoints() {
+        List<PackMapper.Point> pts = new ArrayList<>();
+        for (int i = 0; i < 10_000; i++) {
+            pts.add(new PackMapper.Point(i, i % 7)); // varying so min != max per bucket
+        }
+        assertThat(PackMapper.downsample(pts, 100)).hasSizeLessThanOrEqualTo(100);
     }
 
     @Test

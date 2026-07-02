@@ -31,7 +31,7 @@ class SearchPolicyTest {
         long from = now - (Limits.UNFILTERED_MAX_WINDOW_MS + 1000); // over 5 minutes, no filter
         // Assert on the error CODE (locale-independent), not the localized message text.
         assertThatThrownBy(() ->
-                client().searchXlog(new SearchXlogParams(from, now, null, null, null, false, 20)))
+                client().searchXlog(new SearchXlogParams(from, now, null, null, null, null, null, null, false, 20)))
                 .isInstanceOf(McpError.class)
                 .matches(e -> ((McpError) e).code() == McpError.Code.INVALID_INPUT);
     }
@@ -42,7 +42,7 @@ class SearchPolicyTest {
         long now = 1_000_000_000_000L;
         long from = now - Limits.UNFILTERED_MAX_WINDOW_MS; // exactly 5 minutes
         assertThatThrownBy(() ->
-                client().searchXlog(new SearchXlogParams(from, now, null, null, null, false, 20)))
+                client().searchXlog(new SearchXlogParams(from, now, null, null, null, null, null, null, false, 20)))
                 .satisfiesAnyOf(
                         ex -> assertThat(ex).isInstanceOf(McpError.class)
                                 .matches(e -> ((McpError) e).code() != McpError.Code.INVALID_INPUT),
@@ -54,7 +54,7 @@ class SearchPolicyTest {
         long now = 1_000_000_000_000L;
         long from = now - 6L * 60 * 60 * 1000; // 6 hours, objHash filter present -> passes the window guard
         assertThatThrownBy(() ->
-                client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, false, 20)))
+                client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, null, null, null, false, 20)))
                 .satisfiesAnyOf(
                         ex -> assertThat(ex).isInstanceOf(McpError.class)
                                 .matches(e -> ((McpError) e).code() != McpError.Code.INVALID_INPUT),
@@ -66,7 +66,7 @@ class SearchPolicyTest {
         long now = 1_000_000_000_000L;
         long from = now - (Limits.ABS_MAX_WINDOW_MS + 1000); // over 24 hours (rejected even with a filter)
         assertThatThrownBy(() ->
-                client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, false, 20)))
+                client().searchXlog(new SearchXlogParams(from, now, 123L, null, null, null, null, null, false, 20)))
                 .isInstanceOf(McpError.class)
                 .matches(e -> ((McpError) e).code() == McpError.Code.INVALID_INPUT);
     }
@@ -75,7 +75,7 @@ class SearchPolicyTest {
     void rejectsNonPositiveWindow() {
         long now = 1_000_000_000_000L;
         assertThatThrownBy(() ->
-                client().searchXlog(new SearchXlogParams(now, now, 123L, null, null, false, 20)))
+                client().searchXlog(new SearchXlogParams(now, now, 123L, null, null, null, null, null, false, 20)))
                 .isInstanceOf(McpError.class);
     }
 }

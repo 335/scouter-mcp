@@ -25,6 +25,15 @@ public final class Limits {
     /** Absolute maximum query window regardless of filtering (24 hours). */
     public static final long ABS_MAX_WINDOW_MS = 24L * 60 * 60 * 1000;
 
+    // --- get_service_summary ---
+    /**
+     * Scan cap for aggregation. Higher than search_xlog's cap because rows are not retained (only
+     * per-service counters/elapsed samples accumulate), so a wider sweep is affordable in heap/tokens.
+     */
+    public static final int SUMMARY_SCAN_CAP = 200_000;
+    /** Max distinct services returned (top by count); the rest are dropped with a note. */
+    public static final int SUMMARY_MAX_SERVICES = 50;
+
     // --- get_counter ---
     /** Upper bound on the objHashes (instances) fanned out in a single objType query. */
     public static final int COUNTER_MAX_OBJ = 20;

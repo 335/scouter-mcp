@@ -72,8 +72,10 @@ public class ConnectionPool {
 	}
 
 	public synchronized void initPool(int serverId) {
+		// MCP is invoked intermittently, so eagerly opening a batch of sockets here just lets them go
+		// stale (pool timeout) and get discarded before first use. Start empty and let getTcpProxy()
+		// open connections lazily on demand. (Diverges from upstream, which pre-creates the pool.)
 		closeAllInternal();
-		createAllInternal(serverId);
 	}
 
 	public synchronized int getCurrentPoolSize() {
@@ -104,15 +106,5 @@ public class ConnectionPool {
 		while (pool.size() > 0) {
 			pool.removeFirst().realClose();
 		}
-	}
-
-	private void createAllInternal(int serverId) {
-		//default 6
-		put(new TcpProxy(serverId));
-		put(new TcpProxy(serverId));
-		put(new TcpProxy(serverId));
-		put(new TcpProxy(serverId));
-		put(new TcpProxy(serverId));
-		put(new TcpProxy(serverId));
 	}
 }

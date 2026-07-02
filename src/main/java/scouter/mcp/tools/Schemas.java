@@ -51,9 +51,55 @@ public final class Schemas {
             "to": {"type": "string", "description": "End time (e.g. now)"},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash"},
             "service": {"type": "string", "description": "Filter: service name. Substring match by default (server-side StrMatch), so a short token is enough. Example: 'search-order-info-grade' matches '/api/order/ext/order-info/search-order-info-grade<POST>'. Do not guess the full service name. Advanced: if you include '*', the pattern is used as-is."},
+            "login": {"type": "string", "description": "Filter: login user (server-side StrMatch). Effective for tracing a specific user's requests; also relaxes the 5-minute unfiltered-window limit."},
+            "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch). Also counts as a server-side filter for the window limit."},
+            "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)."},
             "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). Client-side filter"},
             "onlyError": {"type": "boolean", "description": "Filter: error transactions only. Client-side filter"},
             "limit": {"type": "integer", "description": "Max rows to return (default 20, max 200). Keep small at production traffic"}
+          },
+          "required": ["from", "to"]
+        }
+        """;
+
+    public static final String LIST_ALERTS = """
+        {
+          "type": "object",
+          "properties": {
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "to": {"type": "string", "description": "End time (e.g. now)"},
+            "level": {"type": "string", "description": "Filter: minimum/specific alert level (INFO, WARN, ERROR, FATAL)"},
+            "object": {"type": "string", "description": "Filter: object name"},
+            "key": {"type": "string", "description": "Filter: keyword in alert title or message"},
+            "limit": {"type": "integer", "description": "Max alerts (default 100, max 1000)"}
+          },
+          "required": ["from", "to"]
+        }
+        """;
+
+    public static final String ACTIVE_SERVICES = """
+        {
+          "type": "object",
+          "properties": {
+            "objType": {"type": "string", "description": "Target object type (all agents of this type). One of objType/objHash is required."},
+            "objHash": {"type": "integer", "description": "Target a single object hash. One of objType/objHash is required."}
+          }
+        }
+        """;
+
+    public static final String SERVICE_SUMMARY = """
+        {
+          "type": "object",
+          "properties": {
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "to": {"type": "string", "description": "End time (e.g. now)"},
+            "objHash": {"type": "integer", "description": "Filter: a specific object hash"},
+            "service": {"type": "string", "description": "Filter: service name (substring match, server-side StrMatch)"},
+            "login": {"type": "string", "description": "Filter: login user (server-side StrMatch)"},
+            "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch)"},
+            "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)"},
+            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). Client-side filter"},
+            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. Client-side filter"}
           },
           "required": ["from", "to"]
         }

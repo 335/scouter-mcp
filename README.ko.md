@@ -20,9 +20,13 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 # 산출물: build/libs/scouter-mcp-0.1.0-all.jar
 ```
 
+`.mcpb` 번들은 릴리스 CI에서만 이 jar를 감싸 생성한다. 로컬 빌드는 jar만 만든다.
+
 ## 등록 (Claude Code, Claude Desktop 등)
 
-`.mcp.json.example`를 복사한 뒤 jar 절대경로와 자격증명을 채운다.
+collector 하나만 쓸 때는 [GitHub Release](../../releases)의 `.mcpb` 번들을 설치하면 원클릭으로
+끝난다. 또는 `.mcp.json.example`를 복사하고 fat jar(release에서 다운로드하거나 직접 빌드)를 가리키게
+한 뒤 자격증명을 채운다. 여러 collector는 [다중 Collector](#다중-collector) 참고.
 
 | 환경변수 | 설명 |
 |---|---|
@@ -32,20 +36,64 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 | `SCOUTER_PASSWORD` | 로그인 비밀번호 |
 | `SCOUTER_TZ` | 시간대 (예: `Asia/Seoul`) |
 | `SCOUTER_LOCALE` | 사용자 메시지 로케일: `en` 또는 `ko`. 미지정 시 JVM 기본값에서 유도(JVM 언어가 한국어일 때만 한국어, 그 외 영어) |
+| `SCOUTER_INCLUDE_BIND_PARAMS` | `get_xlog_detail`의 SQL 바인드 파라미터 운영자 kill-switch(기본 `true`). `false`면 호출 파라미터와 무관하게 서버측에서 바인드 값을 제거한다(LLM이 다시 켤 수 없음). 바인드 값에 개인정보가 있을 수 있을 때 사용. |
 
-## 도구 (6종)
+### 다중 Collector
+
+공식 릴리스는 `.mcpb` 번들 **하나**(원클릭 설치, collector 하나)와 단독 fat jar를 함께 제공한다.
+`.mcpb`는 자격증명 한 세트를 가진 서버 하나만 정의하므로 번들 하나로 두 collector를 동시에 등록할
+수 없다. collector마다 host/port뿐 아니라 user/password까지 연결정보 세트 전체가 다른 것이 보통이라,
+여러 collector는 jar를 직접 써서 collector마다 항목을 하나씩 둔다:
+
+1. [GitHub Release](../../releases)에서 `scouter-mcp-<version>-all.jar`를 다운로드한다.
+2. 클라이언트 설정(`.mcp.json` / `claude_desktop_config.json`)에 같은 jar를 가리키는 `mcpServers`
+   항목을 collector마다 하나씩, 각자 자체 env 세트로 추가한다. 자격증명이 항목별로 격리된다:
+
+```json
+{
+  "mcpServers": {
+    "scouter-prod": {
+      "command": "java",
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "prod-collector", "SCOUTER_COLLECTOR_PORT": "6100",
+        "SCOUTER_USER": "prod-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
+      }
+    },
+    "scouter-stg": {
+      "command": "java",
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "stg-collector", "SCOUTER_COLLECTOR_PORT": "6100",
+        "SCOUTER_USER": "stg-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
+      }
+    }
+  }
+}
+```
+
+교차 조합은 AI가 오케스트레이션한다.
+
+## 도구 (9종)
 
 | 이름 | 용도 | 주요 입력 |
 |---|---|---|
 | `list_objects` | 오브젝트/에이전트 목록 | `objType?`, `nameLike?` |
-| `search_xlog` | XLog 검색(응답속도/에러) | `from`, `to`, `objHash?`, `service?`, `minElapsedMs?`, `onlyError?`, `limit?`(기본 20, 최대 200) |
+| `search_xlog` | XLog 검색(응답속도/에러) | `from`, `to`, `objHash?`, `service?`, `login?`, `ip?`, `desc?`, `minElapsedMs?`, `onlyError?`, `limit?`(기본 20, 최대 200) |
+| `get_service_summary` | 서비스별 집계(count/avg/max/p95/errorRate), 상위 50 | `from`, `to`, `search_xlog`와 동일 필터 |
 | `get_xlog_detail` | XLog 상세(SQL/바인드 파라미터) | `txid`, `date?`/`at?`, `includeBindParams?`(기본 true) |
 | `get_xlog_by_gxid` | 분산 트랜잭션 묶음 | `gxid`, `date?`/`at?` |
 | `get_counter` | 카운터 시계열 | `objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | objType 지원 카운터 목록 | `objType` |
+| `list_alerts` | 과거 collector 알림 | `from`, `to`, `level?`, `object?`, `key?`, `limit?` |
+| `get_active_services` | 지금 실행 중인 서비스 | `objType`\|`objHash` |
 
-`service`는 기본 부분일치(서버측 `StrMatch`)이므로 짧은 토큰 `search-order-info-grade`만
-넣어도 `/api/order/ext/order-info/search-order-info-grade<POST>`가 매칭된다.
+`service`/`login`/`ip`/`desc`는 기본 부분일치(서버측 `StrMatch`)이므로 짧은 토큰
+`search-order-info-grade`만 넣어도 `/api/order/ext/order-info/search-order-info-grade<POST>`가
+매칭된다. `login`/`ip`/`desc`도 서버측 필터로 인정되어 5분 무필터 구간 제한을 완화한다.
+
+모든 도구는 `readOnlyHint`로 선언된다. `diagnose_root_cause` MCP 프롬프트가 응답속도/에러 조사를
+위한 권장 도구 순서를 제공한다.
 
 ## 리소스/토큰 안전 정책
 
@@ -57,7 +105,12 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 - `service`/`objHash` 필터가 없으면 최대 5분 구간만 허용하고, 절대 상한은 24시간이다.
 - `limit` 기본 20, 최대 200. 결과에 `truncated`/`scanCapReached`와 `hint`를 실어 재조회 대신
   필터를 좁히도록 유도한다.
-- `get_counter`는 `objType` 팬아웃을 인스턴스 20개로 제한한다.
+- `get_service_summary`는 행을 보관하지 않고 서비스별 카운터만 누적하므로 더 높은 스캔 상한
+  (200,000)으로 넓은 구간을 저렴하게 커버한다. `scanCapReached`/`examined`도 함께 보고한다.
+- `get_counter`는 `objType` 팬아웃을 인스턴스 20개로 제한하고, 긴 시계열은 스파이크/저점을
+  보존하는 min/max 방식으로 다운샘플링한다(요약 `min`/`max`/`avg`는 전체 시계열에서 계산).
+- 자정을 넘는 구간은 달력일 단위로 분할 조회한다(collector가 XLog/카운터/알림을 일자별로
+  파티셔닝). 경계 양쪽 데이터가 누락되지 않는다.
 
 ## 국제화 (i18n)
 
@@ -67,8 +120,13 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 
 ## 보안 주의
 
-- Collector에 대해 읽기 전용으로만 동작한다.
-- 자격증명은 환경변수로만 주입한다(파일/인자에 평문 금지).
+- Collector에 대해 읽기 전용으로만 동작한다(쓰기 커맨드 미노출).
+- 자격증명은 환경변수로만 주입한다(파일/인자에 평문 금지). 최소권한/읽기전용 계정 사용을 권장한다.
+- **전송은 평문 TCP**다(Scouter 프로토콜에 TLS 없음): SHA-256 비밀번호 다이제스트, 세션 토큰,
+  모든 XLog/카운터 데이터가 암호화 없이 오간다. 신뢰 네트워크 내부에서만 사용하거나 SSH/VPN으로
+  터널링하라. collector 포트를 공용 인터넷에 노출하지 말 것.
+- `get_xlog_detail`의 바인드 파라미터에는 개인정보가 있을 수 있다. `SCOUTER_INCLUDE_BIND_PARAMS=false`로
+  서버측에서 제거할 수 있다(LLM이 다시 켤 수 없음). 위 환경변수 표 참조.
 - stdout은 JSON-RPC 전용이므로 모든 로그는 stderr로만 출력한다.
 
 ## 라이선스/고지
@@ -78,13 +136,12 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 
 ## 알려진 한계
 
-1. `get_counter`는 collector의 일자별 파일 경계를 고려한 per-day 분할을 하지 않는다.
-   따라서 여러 날에 걸친 범위는 일부 구간 데이터가 누락될 수 있다(단일 날짜 범위 권장).
-2. `search_xlog`의 service/error/SQL 텍스트 디코딩은 행당 최대 2회 TCP round-trip이
-   발생한다(캐시로 완화). 대량 결과(수백~1000건)에서 느릴 수 있다. 배치 디코드는 후속 대상.
-3. `search_xlog`의 `minElapsedMs`/`onlyError`/`limit`는 collector 측 파라미터가 없어
-   클라이언트에서 필터/절단한다. `truncated=true`는 반환건수==limit일 때의 휴리스틱이며
-   거짓양성이 가능하다.
-4. 로그인 시 서버 시간 delta를 1회만 동기화한다(상류의 2초 주기 갱신 데몬은 미포팅).
-   장시간 구동 프로세스의 실시간 상대조회에 미세 드리프트가 가능하다. 과거 시점(명시적
-   epoch) 조회에는 영향이 없다.
+1. `search_xlog`/`get_service_summary`의 `minElapsedMs`/`onlyError`/`limit`는 collector 측
+   파라미터가 없어 클라이언트에서 필터/절단한다. `truncated=true`는 반환건수==limit일 때의
+   휴리스틱이며 거짓양성이 가능하다.
+2. 세션 만료(`INVALID_SESSION`) 시 1회 재로그인 후 요청을 재시도한다. 두 번째도 실패하면
+   `SCOUTER_AUTH_FAILED`로 표면화한다(무한 재시도 없음). 상류의 2초 주기 시간 delta 갱신
+   데몬은 여전히 미포팅이라, 장시간 구동 프로세스의 실시간 상대조회에 미세 드리프트가 가능하다.
+   과거 시점(명시적 epoch) 조회에는 영향이 없다.
+3. `list_alerts`/`get_active_services`는 상류 프로토콜을 포팅했고 스모크 테스트(`SmokeIT`)로
+   collector에 대해 검증한다. 필드 커버리지는 collector 버전에 따라 다를 수 있다.

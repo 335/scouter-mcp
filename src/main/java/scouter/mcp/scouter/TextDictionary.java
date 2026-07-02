@@ -30,9 +30,13 @@ import java.util.Set;
 @Slf4j
 public final class TextDictionary implements PackMapper.TextResolver {
 
+    // Process-wide LRU cache for decoded text. (type,yyyymmdd,hash) mappings are immutable per day, so
+    // sharing across tool calls avoids re-decoding the same services/SQL/methods in a diagnosis session.
+    // Keyed with the server id too, so multiple collectors never collide on identical hash values.
+    private static final LruTextCache SHARED = new LruTextCache(50_000);
+
     private final Server server;
     private final Map<Integer, String> objNameByHash;
-    private final Map<String, String> cache = new HashMap<>();
 
     public TextDictionary(Server server, Map<Integer, String> objNameByHash) {
         this.server = server;
@@ -59,6 +63,11 @@ public final class TextDictionary implements PackMapper.TextResolver {
         return resolve(TextTypes.SQL, yyyymmdd, hash);
     }
 
+    @Override
+    public String method(long yyyymmdd, int hash) {
+        return resolve(TextTypes.METHOD, yyyymmdd, hash);
+    }
+
     /**
      * Batch-resolve many hashes of one type/date in a single GET_TEXT_PACK round-trip and populate the cache.
      * This avoids the per-row round-trips that would otherwise occur when mapping large result sets.
@@ -73,7 +82,7 @@ public final class TextDictionary implements PackMapper.TextResolver {
             if (h == null || h == 0) {
                 continue;
             }
-            if (!cache.containsKey(type + ":" + yyyymmdd + ":" + h)) {
+            if (!SHARED.containsKey(key(type, yyyymmdd, h))) {
                 need.add(h);
             }
         }
@@ -106,20 +115,24 @@ public final class TextDictionary implements PackMapper.TextResolver {
             TcpProxy.close(tcp);
         }
         for (Integer h : need) {
-            cache.put(type + ":" + yyyymmdd + ":" + h, got.get(h)); // cache null for not-found too
+            SHARED.put(key(type, yyyymmdd, h), got.get(h)); // cache null for not-found too
         }
+    }
+
+    private String key(String type, long yyyymmdd, int hash) {
+        return server.getId() + ":" + type + ":" + yyyymmdd + ":" + hash;
     }
 
     private String resolve(String type, long yyyymmdd, int hash) {
         if (hash == 0) {
             return null;
         }
-        String key = type + ":" + yyyymmdd + ":" + hash;
-        if (cache.containsKey(key)) {
-            return cache.get(key);
+        String key = key(type, yyyymmdd, hash);
+        if (SHARED.containsKey(key)) {
+            return SHARED.get(key);
         }
         String text = loadText(type, String.valueOf(yyyymmdd), hash);
-        cache.put(key, text); // cache null too (prevents re-querying)
+        SHARED.put(key, text); // cache null too (prevents re-querying)
         return text;
     }
 

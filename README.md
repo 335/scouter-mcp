@@ -20,9 +20,15 @@ the Collector are read-only.
 # output: build/libs/scouter-mcp-0.1.0-all.jar
 ```
 
+The `.mcpb` bundle is produced only by the release CI (which wraps this jar); local builds just
+produce the jar.
+
 ## Registration (Claude Code, Claude Desktop, ...)
 
-Copy `.mcp.json.example` and fill in the absolute jar path and credentials.
+For a single collector, install the `.mcpb` bundle from the [GitHub Release](../../releases) for a
+one-click setup — or copy `.mcp.json.example`, point it at the fat jar (downloaded from the release or
+built locally), and fill in the credentials. For multiple collectors, see
+[Multiple collectors](#multiple-collectors).
 
 | Env var | Description |
 |---|---|
@@ -32,20 +38,65 @@ Copy `.mcp.json.example` and fill in the absolute jar path and credentials.
 | `SCOUTER_PASSWORD` | Login password |
 | `SCOUTER_TZ` | Time zone (e.g. `Asia/Seoul`) |
 | `SCOUTER_LOCALE` | User-facing message locale: `en` or `ko`. If unset, derived from the JVM default (Korean only when the JVM language is Korean, otherwise English) |
+| `SCOUTER_INCLUDE_BIND_PARAMS` | Operator kill-switch for SQL bind parameters in `get_xlog_detail` (default `true`). Set to `false` to strip bind params server-side regardless of the per-call argument — an LLM cannot re-enable them. Use when bind values may contain PII. |
 
-## Tools (6)
+### Multiple collectors
+
+The official release ships **one** `.mcpb` bundle (one-click install, a single collector) plus the
+standalone fat jar. A `.mcpb` defines exactly one server with one credential set, so it cannot register
+two collectors at once. For multiple collectors — which usually differ in their whole connection set
+(host/port **and** user/password) — use the jar directly and add one entry per collector:
+
+1. Download `scouter-mcp-<version>-all.jar` from the [GitHub Release](../../releases).
+2. Add one `mcpServers` entry per collector to your client config (`.mcp.json` /
+   `claude_desktop_config.json`), all pointing at that same jar, each with its own env set. This keeps
+   each credential isolated:
+
+```json
+{
+  "mcpServers": {
+    "scouter-prod": {
+      "command": "java",
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "prod-collector", "SCOUTER_COLLECTOR_PORT": "6100",
+        "SCOUTER_USER": "prod-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
+      }
+    },
+    "scouter-stg": {
+      "command": "java",
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "env": {
+        "SCOUTER_COLLECTOR_HOST": "stg-collector", "SCOUTER_COLLECTOR_PORT": "6100",
+        "SCOUTER_USER": "stg-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
+      }
+    }
+  }
+}
+```
+
+The AI then orchestrates across the collectors.
+
+## Tools (9)
 
 | Name | Purpose | Key inputs |
 |---|---|---|
 | `list_objects` | List objects/agents | `objType?`, `nameLike?` |
-| `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objHash?`, `service?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
+| `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objHash?`, `service?`, `login?`, `ip?`, `desc?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
+| `get_service_summary` | Per-service aggregate (count/avg/max/p95/errorRate), top 50 | `from`, `to`, same filters as `search_xlog` |
 | `get_xlog_detail` | XLog detail (SQL/bind params) | `txid`, `date?`/`at?`, `includeBindParams?` (default true) |
 | `get_xlog_by_gxid` | Distributed-transaction group | `gxid`, `date?`/`at?` |
 | `get_counter` | Counter time series | `objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | Available counters for an objType | `objType` |
+| `list_alerts` | Past collector alerts | `from`, `to`, `level?`, `object?`, `key?`, `limit?` |
+| `get_active_services` | Services running right now | `objType`\|`objHash` |
 
-`service` uses substring match by default (server-side `StrMatch`), so a short token like
-`search-order-info-grade` matches `/api/order/ext/order-info/search-order-info-grade<POST>`.
+`service`/`login`/`ip`/`desc` use substring match by default (server-side `StrMatch`), so a short token
+like `search-order-info-grade` matches `/api/order/ext/order-info/search-order-info-grade<POST>`.
+`login`/`ip`/`desc` also count as server-side filters, so they relax the 5-minute unfiltered-window cap.
+
+All tools are advertised with `readOnlyHint`. A `diagnose_root_cause` MCP prompt exposes the
+recommended tool order for latency/error investigations.
 
 ## Resource / token safety policy
 
@@ -59,7 +110,12 @@ enforces guardrails (see `scouter.mcp.policy.Limits`):
   window cap is 24 hours.
 - `limit` defaults to 20 and is capped at 200. Results include `truncated`/`scanCapReached` and a
   `hint` so the caller can narrow filters instead of refetching.
-- `get_counter` caps the per-`objType` fan-out at 20 instances.
+- `get_service_summary` retains no rows (only per-service counters), so it uses a higher scan cap
+  (200,000) to cover wider windows cheaply; it reports `scanCapReached`/`examined` too.
+- `get_counter` caps the per-`objType` fan-out at 20 instances, and downsamples long series with a
+  min/max scheme that preserves spikes/dips (summary `min`/`max`/`avg` are computed from the full series).
+- Windows crossing midnight are split per calendar day (the collector partitions XLogs/counters/alerts
+  by day), so no data is lost on either side of the boundary.
 
 ## Internationalization
 
@@ -69,8 +125,14 @@ structured stderr logs (`key=value`) remain English for a stable contract and lo
 
 ## Security notes
 
-- Read-only against the Collector.
+- Read-only against the Collector (no write commands are exposed).
 - Credentials are injected via environment variables only (never in files or arguments as plaintext).
+  Prefer a least-privilege / read-only Scouter account.
+- **Transport is plaintext TCP** (the Scouter protocol has no TLS): the SHA-256 password digest, the
+  session token, and all XLog/counter data cross the wire unencrypted. Run only inside a trusted network,
+  or tunnel over SSH/VPN. Do not expose the collector port over the public internet.
+- `get_xlog_detail` bind parameters can contain PII. Set `SCOUTER_INCLUDE_BIND_PARAMS=false` to strip
+  them server-side (the LLM cannot re-enable them). See the env table above.
 - stdout is reserved for JSON-RPC, so all logs go to stderr only.
 
 ## License / Notice
@@ -80,15 +142,12 @@ See [NOTICE](NOTICE) for details.
 
 ## Known limitations
 
-1. `get_counter` does not split queries per day across the Collector's daily file boundaries, so
-   multi-day ranges may miss data in some sub-ranges (single-day ranges recommended). Planned
-   improvement.
-2. `search_xlog` decodes service/error/SQL text with up to two TCP round-trips per row (mitigated by
-   caching). This can be slow for large result sets (hundreds to ~1000 rows). Batch decoding is a
-   future optimization.
-3. `search_xlog` `minElapsedMs`/`onlyError`/`limit` are applied client-side because the Collector has
-   no native parameters for them. `truncated=true` is a heuristic (returned count == limit) and can be
-   a false positive.
-4. Server time delta is synchronized only once at login (the upstream 2-second refresh daemon is not
-   ported). Long-running processes may drift slightly for real-time relative queries. Absolute-epoch
-   (historical) queries are unaffected.
+1. `search_xlog`/`get_service_summary` `minElapsedMs`/`onlyError`/`limit` are applied client-side because
+   the Collector has no native parameters for them. `truncated=true` is a heuristic (returned count ==
+   limit) and can be a false positive.
+2. On a session-expiry (`INVALID_SESSION`) the client re-logs in once and retries the request; a second
+   failure surfaces as `SCOUTER_AUTH_FAILED` (no infinite retry loop). The upstream 2-second time-delta
+   refresh daemon is still not ported, so long-running processes may drift slightly for real-time
+   relative queries. Absolute-epoch (historical) queries are unaffected.
+3. `list_alerts`/`get_active_services` were ported from the upstream protocol and validated against a
+   collector via the smoke tests (`SmokeIT`); field coverage may vary by collector version.

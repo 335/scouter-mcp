@@ -32,6 +32,40 @@ public final class McpMain {
     private McpMain() {
     }
 
+    // Every tool here is read-only against the collector; advertising readOnlyHint lets clients (Claude
+    // Code, etc.) skip or streamline the write-permission prompt for these calls.
+    private static final McpSchema.ToolAnnotations READ_ONLY =
+            McpSchema.ToolAnnotations.builder().readOnlyHint(true).build();
+
+    // Static diagnosis playbook exposed as an MCP prompt, so a client that has never used these tools
+    // still invokes them in the right order. Kept in English (stable contract), like the tool schemas.
+    private static final String DIAGNOSE_PLAYBOOK = """
+            Use these Scouter MCP tools in order to find the root cause of a latency or error incident.
+
+            1. list_objects — find the objHash/objName of the target agent(s).
+            2. search_xlog — find slow or failing transactions. Filter by service (substring), objHash, login,
+               or ip; set onlyError=true and/or minElapsedMs. Each row carries txid/gxid/objName/endTimeIso.
+            3. get_service_summary — for "which API got slow", aggregate count/avg/max/p95/errorRate over a
+               window without pulling raw rows (no scan-cap penalty).
+            4. get_xlog_detail(txid, at=endTimeIso) — inspect SQL/bind params/profile steps/errors for one
+               transaction. Pass the row's endTimeIso so the per-day partition date is correct.
+            5. get_xlog_by_gxid(gxid) — expand a distributed transaction across services.
+            6. get_counter / list_counters — confirm blast radius with time series (Cpu, Heap, TPS, error rate).
+            7. list_alerts / get_active_services — check what fired, and what is running right now (hangs/backlog).
+            8. Cross-correlate: take objName + endTimeIso window + txid/gxid and search OpenSearch/Datadog logs.
+
+            Tips: prefer narrow windows and server-side filters (service/objHash/login/ip) to avoid the scan cap.
+            Watch truncated/scanCapReached/hint in results and narrow instead of refetching.
+            """;
+
+    private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {
+        return McpSchema.Tool.builder(name)
+                .description(description)
+                .inputSchema(jm, schema)
+                .annotations(READ_ONLY)
+                .build();
+    }
+
     private static McpSchema.CallToolResult toolError(scouter.mcp.error.McpError e) {
         log.warn(e.toLogLine());
         String json;
@@ -54,11 +88,9 @@ public final class McpMain {
         McpJsonMapper jsonMapper = new JacksonMcpJsonMapperSupplier().get();
         StdioServerTransportProvider transport = new StdioServerTransportProvider(jsonMapper);
 
-        McpSchema.Tool listObjects = McpSchema.Tool.builder()
-                .name("list_objects")
-                .description("List Scouter monitored objects (agents). Filter by objType/nameLike.")
-                .inputSchema(jsonMapper, Schemas.LIST_OBJECTS)
-                .build();
+        McpSchema.Tool listObjects = readOnlyTool(jsonMapper, "list_objects",
+                "List Scouter monitored objects (agents). Filter by objType/nameLike.",
+                Schemas.LIST_OBJECTS);
 
         McpServerFeatures.SyncToolSpecification listObjectsSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(listObjects)
@@ -83,11 +115,9 @@ public final class McpMain {
                 })
                 .build();
 
-        McpSchema.Tool getCounter = McpSchema.Tool.builder()
-                .name("get_counter")
-                .description("Query counter time series over a past range. One of objHashes/objType, plus counter/from/to, is required.")
-                .inputSchema(jsonMapper, Schemas.GET_COUNTER)
-                .build();
+        McpSchema.Tool getCounter = readOnlyTool(jsonMapper, "get_counter",
+                "Query counter time series over a past range. One of objHashes/objType, plus counter/from/to, is required.",
+                Schemas.GET_COUNTER);
 
         McpServerFeatures.SyncToolSpecification getCounterSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getCounter)
@@ -147,11 +177,9 @@ public final class McpMain {
                 })
                 .build();
 
-        McpSchema.Tool listCounters = McpSchema.Tool.builder()
-                .name("list_counters")
-                .description("List available counter metadata (name/displayName/unit) for a given objType.")
-                .inputSchema(jsonMapper, Schemas.LIST_COUNTERS)
-                .build();
+        McpSchema.Tool listCounters = readOnlyTool(jsonMapper, "list_counters",
+                "List available counter metadata (name/displayName/unit) for a given objType.",
+                Schemas.LIST_COUNTERS);
 
         McpServerFeatures.SyncToolSpecification listCountersSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(listCounters)
@@ -175,11 +203,9 @@ public final class McpMain {
                 })
                 .build();
 
-        McpSchema.Tool searchXlog = McpSchema.Tool.builder()
-                .name("search_xlog")
-                .description("Search XLogs (transactions). from/to required. At production traffic, without a service or objHash filter only windows up to 5 minutes are allowed, and results are partial once the scan cap is hit (check truncated/hint). Prefer narrowing by service (substring match) or objHash.")
-                .inputSchema(jsonMapper, Schemas.SEARCH_XLOG)
-                .build();
+        McpSchema.Tool searchXlog = readOnlyTool(jsonMapper, "search_xlog",
+                "Search XLogs (transactions). from/to required. At production traffic, without a service or objHash filter only windows up to 5 minutes are allowed, and results are partial once the scan cap is hit (check truncated/hint). Prefer narrowing by service (substring match) or objHash.",
+                Schemas.SEARCH_XLOG);
 
         McpServerFeatures.SyncToolSpecification searchXlogSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(searchXlog)
@@ -191,11 +217,15 @@ public final class McpMain {
                         long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
                         Long objHash = asLong(arguments, "objHash");
                         String service = asString(arguments, "service");
+                        String login = asString(arguments, "login");
+                        String ip = asString(arguments, "ip");
+                        String desc = asString(arguments, "desc");
                         Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
                         boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
                         int limit = clampLimit(asInteger(arguments, "limit"));
                         SearchXlogParams params = new SearchXlogParams(
-                                fromMillis, toMillis, objHash, service, minElapsedMs, onlyError, limit);
+                                fromMillis, toMillis, objHash, service, login, ip, desc,
+                                minElapsedMs, onlyError, limit);
                         String json = Tools.renderSearchXlog(config.locale(), client, params);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
@@ -212,11 +242,45 @@ public final class McpMain {
                 })
                 .build();
 
-        McpSchema.Tool getXlogDetail = McpSchema.Tool.builder()
-                .name("get_xlog_detail")
-                .description("Get a single XLog detail (summary + profile steps/SQL/errors). txid is a globally unique ID but the collector indexes XLogs by day, so the correct date is also required. Use the endTimeIso from a search_xlog result row as the 'at' parameter to get the date automatically. Accepts Hexa32 txid strings (e.g. 'z3st744n3d2p6q') as well as raw longs.")
-                .inputSchema(jsonMapper, Schemas.GET_XLOG_DETAIL)
+        McpSchema.Tool getServiceSummary = readOnlyTool(jsonMapper, "get_service_summary",
+                "Aggregate XLogs per service over a window: count/errorCount/errorRate/avgMs/maxMs/p95Ms, top 50 by count. Retains no raw rows and uses a higher scan cap, so it covers wider windows cheaply. Same filters as search_xlog (service/objHash/login/ip/desc/minElapsedMs/onlyError). Best first step for 'which API got slow or errored'.",
+                Schemas.SERVICE_SUMMARY);
+
+        McpServerFeatures.SyncToolSpecification getServiceSummarySpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getServiceSummary)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        Long objHash = asLong(arguments, "objHash");
+                        String service = asString(arguments, "service");
+                        String login = asString(arguments, "login");
+                        String ip = asString(arguments, "ip");
+                        String desc = asString(arguments, "desc");
+                        Integer minElapsedMs = asInteger(arguments, "minElapsedMs");
+                        boolean onlyError = Boolean.TRUE.equals(asBoolean(arguments, "onlyError"));
+                        SearchXlogParams params = new SearchXlogParams(
+                                fromMillis, toMillis, objHash, service, login, ip, desc,
+                                minElapsedMs, onlyError, 0);
+                        String json = Tools.renderServiceSummary(config.locale(), client, params);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
                 .build();
+
+        McpSchema.Tool getXlogDetail = readOnlyTool(jsonMapper, "get_xlog_detail",
+                "Get a single XLog detail (summary + profile steps/SQL/errors). txid is a globally unique ID but the collector indexes XLogs by day, so the correct date is also required. Use the endTimeIso from a search_xlog result row as the 'at' parameter to get the date automatically. Accepts Hexa32 txid strings (e.g. 'z3st744n3d2p6q') as well as raw longs.",
+                Schemas.GET_XLOG_DETAIL);
 
         McpServerFeatures.SyncToolSpecification getXlogDetailSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getXlogDetail)
@@ -225,7 +289,10 @@ public final class McpMain {
                         Map<String, Object> arguments = request.arguments();
                         long txid = requireLong(arguments, "txid");
                         String yyyymmdd = resolveYyyymmdd(arguments, config);
-                        boolean includeBindParams = !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
+                        // Operator kill-switch wins: if disabled server-side, bind params are never included,
+                        // regardless of the per-call argument (an LLM cannot opt back in).
+                        boolean includeBindParams = config.bindParamsEnabled()
+                                && !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
                         String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
@@ -242,11 +309,9 @@ public final class McpMain {
                 })
                 .build();
 
-        McpSchema.Tool getXlogByGxid = McpSchema.Tool.builder()
-                .name("get_xlog_by_gxid")
-                .description("List XLogs belonging to the same gxid (global transaction). gxid required.")
-                .inputSchema(jsonMapper, Schemas.GET_XLOG_BY_GXID)
-                .build();
+        McpSchema.Tool getXlogByGxid = readOnlyTool(jsonMapper, "get_xlog_by_gxid",
+                "List XLogs belonging to the same gxid (global transaction). gxid required.",
+                Schemas.GET_XLOG_BY_GXID);
 
         McpServerFeatures.SyncToolSpecification getXlogByGxidSpec = McpServerFeatures.SyncToolSpecification.builder()
                 .tool(getXlogByGxid)
@@ -271,11 +336,83 @@ public final class McpMain {
                 })
                 .build();
 
+        McpServerFeatures.SyncPromptSpecification diagnosePlaybook = new McpServerFeatures.SyncPromptSpecification(
+                new McpSchema.Prompt("diagnose_root_cause",
+                        "Step-by-step playbook for diagnosing latency/errors with the Scouter MCP tools.",
+                        List.of()),
+                (exchange, request) -> new McpSchema.GetPromptResult(
+                        "Scouter APM root-cause diagnosis playbook",
+                        List.of(new McpSchema.PromptMessage(McpSchema.Role.USER,
+                                new McpSchema.TextContent(DIAGNOSE_PLAYBOOK)))));
+
+        McpSchema.Tool listAlerts = readOnlyTool(jsonMapper, "list_alerts",
+                "List past collector alerts over a window (ALERT_LOAD_TIME). Optional filters: level (INFO/WARN/ERROR/FATAL), object (name), key (keyword in title/message). Good entry point for 'what happened' before drilling into XLogs.",
+                Schemas.LIST_ALERTS);
+
+        McpServerFeatures.SyncToolSpecification listAlertsSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(listAlerts)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        String level = asString(arguments, "level");
+                        String object = asString(arguments, "object");
+                        String key = asString(arguments, "key");
+                        Integer limit = asInteger(arguments, "limit");
+                        String json = Tools.renderListAlerts(config.locale(), client, fromMillis, toMillis,
+                                level, object, key, limit == null ? 0 : limit);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
+        McpSchema.Tool getActiveServices = readOnlyTool(jsonMapper, "get_active_services",
+                "List services currently running on an agent right now (OBJECT_ACTIVE_SERVICE_LIST). One of objType/objHash is required. Use to diagnose live hangs/backlog (long-running threads, stuck SQL).",
+                Schemas.ACTIVE_SERVICES);
+
+        McpServerFeatures.SyncToolSpecification getActiveServicesSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getActiveServices)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objType = asString(arguments, "objType");
+                        Long objHash = asLong(arguments, "objHash");
+                        if (objType == null && objHash == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "one of objType/objHash is required");
+                        }
+                        String json = Tools.renderActiveServices(config.locale(), client, objType, objHash);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
-                .capabilities(McpSchema.ServerCapabilities.builder().tools(true).build())
+                .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
-                        getXlogDetailSpec, getXlogByGxidSpec)
+                        getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
+                        listAlertsSpec, getActiveServicesSpec)
+                .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

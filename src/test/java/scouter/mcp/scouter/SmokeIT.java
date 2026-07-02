@@ -85,12 +85,12 @@ class SmokeIT {
 
             // search_xlog: by policy, unfiltered broad queries are limited to 5 minutes, so filter by target objHash.
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, false, 20)).rows();
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, null, false, 20)).rows();
             if (rows == null || rows.isEmpty()) {
                 long wider = now - 6 * 60 * 60 * 1000L;
                 System.err.println("[smoke] 0 rows in last 1 hour - widening search to last 6 hours");
                 rows = client.searchXlog(
-                        new SearchXlogParams(wider, now, (long) target.objHash(), null, null, false, 20)).rows();
+                        new SearchXlogParams(wider, now, (long) target.objHash(), null, null, null, null, null, false, 20)).rows();
             }
             System.err.println("[smoke] search_xlog rows=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -160,12 +160,12 @@ class SmokeIT {
 
             // Broad search: minElapsedMs=10 to keep only non-trivial transactions, top 50
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, (long) target.objHash(), null, 10, false, 50)).rows();
+                    new SearchXlogParams(from, now, (long) target.objHash(), null, null, null, null, 10, false, 50)).rows();
             if (rows == null || rows.isEmpty()) {
                 // widen to 6 hours
                 rows = client.searchXlog(
                         new SearchXlogParams(now - 6 * 60 * 60 * 1000L, now,
-                                (long) target.objHash(), null, 10, false, 50)).rows();
+                                (long) target.objHash(), null, null, null, null, 10, false, 50)).rows();
             }
             System.err.println("[smoke-sql] xlog rows(minElapsed=10ms)=" + (rows == null ? 0 : rows.size()));
             if (rows != null) {
@@ -276,7 +276,7 @@ class SmokeIT {
             }
             // Pass only a short token (no full service name). limit=1 for a single example.
             List<XLogRowDto> rows = client.searchXlog(
-                    new SearchXlogParams(from, now, objHash, token, null, false, 1)).rows();
+                    new SearchXlogParams(from, now, objHash, token, null, null, null, null, false, 1)).rows();
             System.err.println("[smoke-svc] token='" + token + "' rows=" + (rows == null ? 0 : rows.size()));
             if (rows != null && !rows.isEmpty()) {
                 XLogRowDto r = rows.get(0);
@@ -285,6 +285,66 @@ class SmokeIT {
             } else {
                 System.err.println("[smoke-svc] no match in last 1 hour (data may be absent) - skip");
             }
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void exercisesServiceSummary() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 60 * 60 * 1000L;
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            List<SObjectDto> objects = client.listObjects();
+            assumeTrue(objects != null && !objects.isEmpty(), "no objects, skipping summary");
+            SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
+            var res = client.getServiceSummary(new SearchXlogParams(
+                    from, now, (long) target.objHash(), null, null, null, null, null, false, 0));
+            assertThat(res).isNotNull();
+            System.err.println("[smoke-summary] services=" + res.services().size()
+                    + " totalCount=" + res.totalCount() + " scanCapReached=" + res.scanCapReached());
+            res.services().stream().limit(5).forEach(s ->
+                    System.err.println("[smoke-summary] " + abbreviate(s.service())
+                            + " count=" + s.count() + " avgMs=" + s.avgMs() + " maxMs=" + s.maxMs()
+                            + " p95Ms=" + s.p95Ms() + " errorRate=" + s.errorRate()));
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void exercisesListAlerts() {
+        Config c = Config.fromEnv(System.getenv());
+        long now = System.currentTimeMillis();
+        long from = now - 24 * 60 * 60 * 1000L; // last 24 hours
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            var alerts = client.getAlerts(from, now, null, null, null, 20);
+            assertThat(alerts).isNotNull();
+            System.err.println("[smoke-alerts] count=" + alerts.size());
+            alerts.stream().limit(5).forEach(a ->
+                    System.err.println("[smoke-alerts] " + a.timeIso() + " level=" + a.level()
+                            + " objType=" + a.objType() + " obj=" + a.objName()
+                            + " title=" + abbreviate(a.title())));
+        }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "SCOUTER_COLLECTOR_HOST", matches = ".+")
+    void exercisesActiveServices() {
+        Config c = Config.fromEnv(System.getenv());
+        try (TcpScouterClient client = new TcpScouterClient(c)) {
+            client.connect();
+            List<SObjectDto> objects = client.listObjects();
+            assumeTrue(objects != null && !objects.isEmpty(), "no objects, skipping active services");
+            SObjectDto target = objects.stream().filter(SObjectDto::alive).findFirst().orElse(objects.get(0));
+            var active = client.getActiveServices(null, (long) target.objHash());
+            assertThat(active).isNotNull();
+            System.err.println("[smoke-active] objHash=" + target.objHash() + " running=" + active.size());
+            active.stream().limit(5).forEach(a ->
+                    System.err.println("[smoke-active] id=" + a.id() + " state=" + a.state()
+                            + " elapsedMs=" + a.elapsedMs() + " service=" + abbreviate(a.service())
+                            + " sql=" + abbreviate(a.sql())));
         }
     }
 

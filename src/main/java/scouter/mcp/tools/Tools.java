@@ -6,6 +6,8 @@ import scouter.mcp.i18n.Messages;
 import scouter.mcp.policy.Limits;
 import scouter.mcp.scouter.PackMapper;
 import scouter.mcp.scouter.ScouterClient;
+import scouter.mcp.scouter.dto.ActiveServiceDto;
+import scouter.mcp.scouter.dto.AlertDto;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
@@ -13,6 +15,7 @@ import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
+import scouter.mcp.scouter.dto.XlogSummaryResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -99,6 +102,26 @@ public final class Tools {
         }
     }
 
+    public static String renderServiceSummary(Locale locale, ScouterClient client, SearchXlogParams params) {
+        XlogSummaryResult res = client.getServiceSummary(params);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("serviceCount", res.services().size());
+        result.put("totalCount", res.totalCount());
+        result.put("scanCapReached", res.scanCapReached());
+        result.put("examined", res.examined());
+        result.put("services", res.services());
+        if (res.scanCapReached()) {
+            result.put("hint", Messages.get(locale, "hint.summary_scan_cap", res.examined()));
+        } else if (res.services().isEmpty()) {
+            result.put("hint", Messages.get(locale, "hint.search_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public static String renderXlogDetail(ScouterClient client, long txid, String yyyymmdd,
                                           boolean includeBindParams) {
         XLogDetailDto detail = client.getXlogDetail(txid, yyyymmdd, includeBindParams);
@@ -116,6 +139,38 @@ public final class Tools {
         result.put("rows", rows);
         if (rows.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.gxid_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderListAlerts(Locale locale, ScouterClient client,
+                                          long fromMillis, long toMillis, String level, String object,
+                                          String key, int limit) {
+        List<AlertDto> alerts = client.getAlerts(fromMillis, toMillis, level, object, key, limit);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", alerts.size());
+        result.put("alerts", alerts);
+        if (alerts.isEmpty()) {
+            result.put("hint", Messages.get(locale, "hint.alerts_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderActiveServices(Locale locale, ScouterClient client, String objType, Long objHash) {
+        List<ActiveServiceDto> active = client.getActiveServices(objType, objHash);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", active.size());
+        result.put("services", active);
+        if (active.isEmpty()) {
+            result.put("hint", Messages.get(locale, "hint.active_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);

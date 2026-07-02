@@ -48,17 +48,19 @@ public final class PackMapper {
     }
 
     /**
-     * Bucket-average a series down to at most maxPoints. Returns the input unchanged when already small.
-     * Each output point uses the bucket's first timestamp and the mean of its values, preserving shape
-     * while bounding token usage for high-resolution counters.
+     * Min/max downsample a series to at most maxPoints. Returns the input unchanged when already small.
+     * The series is divided into maxPoints/2 buckets; each bucket contributes its minimum and maximum
+     * point, emitted in chronological order. Unlike bucket averaging this preserves sharp spikes and
+     * dips (the most important signal in APM counters) while keeping the point budget bounded.
      */
     public static List<Point> downsample(List<Point> points, int maxPoints) {
         if (points == null || maxPoints <= 0 || points.size() <= maxPoints) {
             return points;
         }
+        int buckets = Math.max(1, maxPoints / 2);
+        double bucket = (double) points.size() / buckets;
         List<Point> out = new ArrayList<>(maxPoints);
-        double bucket = (double) points.size() / maxPoints;
-        for (int i = 0; i < maxPoints; i++) {
+        for (int i = 0; i < buckets; i++) {
             int start = (int) Math.floor(i * bucket);
             int end = (int) Math.floor((i + 1) * bucket);
             if (start >= points.size()) {
@@ -68,11 +70,24 @@ public final class PackMapper {
                 end = start + 1;
             }
             end = Math.min(end, points.size());
-            double sum = 0d;
-            for (int j = start; j < end; j++) {
-                sum += points.get(j).value();
+            Point minP = points.get(start);
+            Point maxP = points.get(start);
+            for (int j = start + 1; j < end; j++) {
+                Point p = points.get(j);
+                if (p.value() < minP.value()) {
+                    minP = p;
+                }
+                if (p.value() > maxP.value()) {
+                    maxP = p;
+                }
             }
-            out.add(new Point(points.get(start).timeMillis(), sum / (end - start)));
+            // Emit the two extremes in chronological order to preserve the visual shape.
+            Point first = minP.timeMillis() <= maxP.timeMillis() ? minP : maxP;
+            Point second = first == minP ? maxP : minP;
+            out.add(first);
+            if (second != first) {
+                out.add(second);
+            }
         }
         return out;
     }
@@ -100,6 +115,11 @@ public final class PackMapper {
 
         // Resolve SQL text (TextTypes.SQL). null if unimplemented/unresolved. (Used only by profiling tools.)
         default String sql(long yyyymmdd, int hash) {
+            return null;
+        }
+
+        // Resolve method name (TextTypes.METHOD). null if unresolved. (Used only by profiling tools.)
+        default String method(long yyyymmdd, int hash) {
             return null;
         }
     }
@@ -171,7 +191,8 @@ public final class PackMapper {
                     String name = api.address != null ? api.address : "#" + api.hash;
                     stepDtos.add(new StepDto(stepType(step), name, api.elapsed));
                 } else if (step instanceof MethodStep method) {
-                    stepDtos.add(new StepDto(stepType(step), "#" + method.hash, method.elapsed));
+                    String mName = dict.method(yyyymmdd, method.hash);
+                    stepDtos.add(new StepDto(stepType(step), mName != null ? mName : "#" + method.hash, method.elapsed));
                 } else if (step instanceof MessageStep msg) {
                     stepDtos.add(new StepDto(stepType(step), msg.message, 0));
                 } else if (step instanceof HashedMessageStep hmsg) {

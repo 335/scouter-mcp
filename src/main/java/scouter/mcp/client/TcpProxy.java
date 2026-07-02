@@ -108,11 +108,6 @@ public class TcpProxy implements AutoCloseable {
         tcp.close();
     }
 
-    @Override
-    protected void finalize() throws Throwable {
-        tcp.close();
-    }
-
     public Pack getSingle(String cmd, Pack param) {
         List<Pack> values = process(cmd, param);
         if (values == null || values.size() == 0)

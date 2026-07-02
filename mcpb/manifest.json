@@ -19,7 +19,8 @@
         "SCOUTER_COLLECTOR_PORT": "${user_config.collector_port}",
         "SCOUTER_USER": "${user_config.scouter_user}",
         "SCOUTER_PASSWORD": "${user_config.scouter_password}",
-        "SCOUTER_TZ": "${user_config.timezone}"
+        "SCOUTER_TZ": "${user_config.timezone}",
+        "SCOUTER_INCLUDE_BIND_PARAMS": "${user_config.include_bind_params}"
       }
     }
   },
@@ -56,14 +57,24 @@
       "description": "IANA timezone for time-range parsing and display",
       "required": false,
       "default": "Asia/Seoul"
+    },
+    "include_bind_params": {
+      "type": "string",
+      "title": "Include SQL Bind Parameters",
+      "description": "Whether get_xlog_detail may include SQL bind parameters (true/false). Set to false when bind values can contain PII; the LLM cannot re-enable them.",
+      "required": false,
+      "default": "true"
     }
   },
   "tools": [
     { "name": "list_objects", "description": "List Scouter monitored objects (agents)." },
     { "name": "get_counter", "description": "Query counter time series over a past range." },
     { "name": "list_counters", "description": "List available counter metadata for an objType." },
-    { "name": "search_xlog", "description": "Search XLogs (transactions)." },
+    { "name": "search_xlog", "description": "Search XLogs (transactions). Filter by service/objHash/login/ip/desc." },
+    { "name": "get_service_summary", "description": "Per-service aggregate stats (count/avg/max/p95/errorRate)." },
     { "name": "get_xlog_detail", "description": "Get a single XLog detail (profile steps/SQL/errors)." },
-    { "name": "get_xlog_by_gxid", "description": "List XLogs belonging to the same gxid." }
+    { "name": "get_xlog_by_gxid", "description": "List XLogs belonging to the same gxid." },
+    { "name": "list_alerts", "description": "List past collector alerts over a window." },
+    { "name": "get_active_services", "description": "List services currently running on an agent." }
   ]
 }

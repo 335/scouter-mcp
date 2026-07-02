@@ -55,6 +55,8 @@ tasks.named<JavaExec>("run") {
 }
 
 // fat jar: build/libs/scouter-mcp-0.1.0-all.jar (includes the Main-Class manifest)
+// The .mcpb bundle is assembled only in the release CI (see .github/workflows/release.yml), which
+// wraps this jar with the manifest via the official `mcpb pack`. Local builds just produce the jar.
 tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
     manifest {
         attributes["Main-Class"] = "scouter.mcp.McpMain"
