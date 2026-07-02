@@ -145,7 +145,15 @@ public final class Tools {
         result.put("count", rows.size());
         result.put("truncated", res.truncated());
         result.put("rows", rows);
-        if (res.scanCapReached()) {
+        // Client-side filters (minElapsedMs/onlyError) drop rows only after the collector streamed them.
+        // A sub-1% keep rate over a big scan means the query shape itself is wasteful — say so explicitly
+        // instead of letting the model retry the same shape with a wider window.
+        boolean clientFilter = params.minElapsedMs() != null || params.onlyError();
+        boolean lowSelectivity = clientFilter && res.examined() >= 1000
+                && (long) rows.size() * 100 < res.examined();
+        if (lowSelectivity) {
+            result.put("hint", Messages.get(locale, "hint.low_selectivity", rows.size(), res.examined()));
+        } else if (res.scanCapReached()) {
             // Scan cap reached: results may be partial, so strongly steer toward narrowing the filter (saves tokens/resources).
             result.put("hint", Messages.get(locale, "hint.search_scan_cap", res.examined()));
         } else if (res.truncated()) {

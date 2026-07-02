@@ -155,4 +155,19 @@ class ToolsContractTest {
         assertThat(json).contains("\"series\":[]");
         assertThat(json).contains("hint");
     }
+
+    @Test
+    void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
+        // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
+        // scanned rows are discarded the hint must steer to server-side filters / summary tools.
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.searchXlog(any())).thenReturn(
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 5000, false, List.of()));
+
+        String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, null,
+                        null, null, null, 10_000, false, 20));
+
+        assertThat(json).contains("client-side");
+    }
 }
