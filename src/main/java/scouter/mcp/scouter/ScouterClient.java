@@ -6,6 +6,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
@@ -43,6 +44,10 @@ public interface ScouterClient extends AutoCloseable {
     // Currently-running services on an agent/objType (OBJECT_ACTIVE_SERVICE_LIST). Real-time snapshot.
     // objNameLike is a fuzzy app-name fragment resolved to alive instances (objType/objHash win if set).
     List<ActiveServiceDto> getActiveServices(String objType, Long objHash, String objNameLike);
+
+    // JVM thread list per instance (OBJECT_THREAD_LIST). Live snapshot; fuzzy targets resolve to
+    // alive instances only (the collector relays to the agent), capped at Limits.THREAD_MAX_OBJ.
+    List<ThreadListDto> listThreads(String objNameLike, Long objHash);
 
     @Override
     void close();

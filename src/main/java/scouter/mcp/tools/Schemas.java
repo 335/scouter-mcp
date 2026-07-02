@@ -109,6 +109,16 @@ public final class Schemas {
         }
         """;
 
+    public static final String LIST_THREADS = """
+        {
+          "type": "object",
+          "properties": {
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (e.g. 'shop-order-api'). Resolved to alive instances, max 5 (a JVM holds hundreds of threads). One of objNameLike/objHash is required."},
+            "objHash": {"type": "integer", "description": "Target a single object hash (advanced; prefer objNameLike)"}
+          }
+        }
+        """;
+
     public static final String GET_XLOG_DETAIL = """
         {
           "type": "object",

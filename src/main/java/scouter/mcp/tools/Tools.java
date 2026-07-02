@@ -12,6 +12,7 @@ import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
 import scouter.mcp.scouter.dto.XlogSearchResult;
@@ -250,6 +251,39 @@ public final class Tools {
         result.put("services", active);
         if (active.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.active_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderListThreads(Locale locale, ScouterClient client, String objNameLike, Long objHash) {
+        List<ThreadListDto> lists = client.listThreads(objNameLike, objHash);
+        List<Map<String, Object>> instances = new ArrayList<>(lists.size());
+        for (ThreadListDto t : lists) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("objHash", t.objHash());
+            m.put("objName", t.objName());
+            scouter.mcp.scouter.AppLabel.Label label = scouter.mcp.scouter.AppLabel.of(t.objName());
+            m.put("app", label.app());
+            if (label.instance() != null) {
+                m.put("instance", label.instance());
+            }
+            m.put("totalThreads", t.totalThreads());
+            m.put("stateCounts", t.stateCounts());
+            if (t.truncated()) {
+                m.put("truncated", true);
+            }
+            m.put("threads", t.threads());
+            instances.add(m);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", lists.size());
+        result.put("instances", instances);
+        if (lists.isEmpty()) {
+            result.put("hint", Messages.get(locale, "hint.threads_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);

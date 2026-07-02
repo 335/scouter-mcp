@@ -456,12 +456,42 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool listThreads = readOnlyTool(jsonMapper, "list_threads",
+                "List JVM threads on an agent right now (live snapshot): per-instance state histogram (RUNNABLE/BLOCKED/WAITING...) plus the top 50 threads by cpu, each with id/name/state/cpu and txid/service when a service is running on it. Use for hang, thread-pool exhaustion, or lock-contention triage; drill into one thread with get_thread_detail(txid). One of objNameLike/objHash required.",
+                Schemas.LIST_THREADS);
+
+        McpServerFeatures.SyncToolSpecification listThreadsSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(listThreads)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objNameLike = asString(arguments, "objNameLike");
+                        Long objHash = asLong(arguments, "objHash");
+                        if (objNameLike == null && objHash == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "one of objNameLike/objHash is required");
+                        }
+                        String json = Tools.renderListThreads(config.locale(), client, objNameLike, objHash);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
-                        listAlertsSpec, getActiveServicesSpec)
+                        listAlertsSpec, getActiveServicesSpec, listThreadsSpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 

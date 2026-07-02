@@ -157,6 +157,22 @@ class ToolsContractTest {
     }
 
     @Test
+    void listThreadsRendersStateCountsAndRows() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.listThreads(eq("app"), isNull())).thenReturn(List.of(
+                new scouter.mcp.scouter.dto.ThreadListDto(1, "/pod/app1", 3,
+                        java.util.Map.of("RUNNABLE", 2, "BLOCKED", 1),
+                        List.of(new scouter.mcp.scouter.dto.ThreadRowDto(
+                                11, "http-1", "RUNNABLE", 120, "ztx", 500L, "/api/x")),
+                        true)));
+
+        String json = Tools.renderListThreads(Locale.ENGLISH, client, "app", null);
+
+        assertThat(json).contains("RUNNABLE").contains("http-1").contains("\"totalThreads\":3");
+        assertThat(json).contains("\"truncated\":true");
+    }
+
+    @Test
     void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
         // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.

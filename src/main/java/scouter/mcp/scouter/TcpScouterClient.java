@@ -37,6 +37,8 @@ import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ServiceSummaryDto;
+import scouter.mcp.scouter.dto.ThreadListDto;
+import scouter.mcp.scouter.dto.ThreadRowDto;
 import scouter.mcp.scouter.dto.XlogSummaryResult;
 import scouter.mcp.scouter.dto.XLogDetailDto;
 import scouter.mcp.scouter.dto.XLogRowDto;
@@ -972,6 +974,89 @@ public final class TcpScouterClient implements ScouterClient {
             }
         } finally {
             TcpProxy.close(tcp);
+        }
+        return out;
+    }
+
+    /**
+     * Resolve a fuzzy/explicit target to alive instances, capped. objHash wins over objNameLike.
+     * Used by the live agent-relayed tools (threads/env) where dead pods cannot answer.
+     */
+    private List<SObjectDto> resolveAliveTargets(String objNameLike, Long objHash, int cap) {
+        List<SObjectDto> all = listObjectsImpl();
+        if (objHash != null && objHash != 0L) {
+            for (SObjectDto o : all) {
+                if (o.objHash() == objHash.intValue()) {
+                    return List.of(o);
+                }
+            }
+            // Unknown hash: attempt the call anyway (the collector may know an object we cannot list).
+            return List.of(new SObjectDto(objHash.intValue(), "#" + objHash, null, null, true));
+        }
+        List<SObjectDto> alive = new ArrayList<>();
+        for (SObjectDto o : TargetResolver.match(all, objNameLike)) {
+            if (o.alive()) {
+                alive.add(o);
+            }
+        }
+        if (alive.isEmpty()) {
+            throw McpError.of(McpError.Code.NOT_FOUND,
+                            Messages.get(config.locale(), "error.target_not_found", String.valueOf(objNameLike).trim()))
+                    .withHint("candidates", String.join(", ", TargetResolver.suggest(all, 10)));
+        }
+        return alive.size() > cap ? alive.subList(0, cap) : alive;
+    }
+
+    @Override
+    public List<ThreadListDto> listThreads(String objNameLike, Long objHash) {
+        return SessionRetry.execute(() -> listThreadsImpl(objNameLike, objHash), this::relogin);
+    }
+
+    private List<ThreadListDto> listThreadsImpl(String objNameLike, Long objHash) {
+        // OBJECT_THREAD_LIST: {objHash} -> single MapPack of parallel ListValues
+        // (id/name/stat/cpu + java-agent extras txid/elapsed/service; the latter are NullValue
+        // when no service runs on the thread). The collector relays to the agent live.
+        List<ThreadListDto> out = new ArrayList<>();
+        for (SObjectDto o : resolveAliveTargets(objNameLike, objHash, Limits.THREAD_MAX_OBJ)) {
+            MapPack param = new MapPack();
+            param.put(ParamConstant.OBJ_HASH, o.objHash());
+            TcpProxy tcp = TcpProxy.getTcpProxy(server);
+            try {
+                Pack p = tcp.getSingle(RequestCmd.OBJECT_THREAD_LIST, param);
+                if (!(p instanceof MapPack mp)) {
+                    continue;
+                }
+                ListValue id = mp.getList("id");
+                ListValue name = mp.getList("name");
+                ListValue stat = mp.getList("stat");
+                ListValue cpu = mp.getList("cpu");
+                ListValue txid = mp.getList("txid");
+                ListValue elapsed = mp.getList("elapsed");
+                ListValue service = mp.getList("service");
+                int n = id != null ? id.size() : 0;
+                List<ThreadRowDto> rows = new ArrayList<>(n);
+                Map<String, Integer> states = new java.util.TreeMap<>();
+                for (int i = 0; i < n; i++) {
+                    String state = lvStr(stat, i);
+                    states.merge(state != null ? state : "UNKNOWN", 1, Integer::sum);
+                    String tx = lvStr(txid, i);
+                    rows.add(new ThreadRowDto(lvLong(id, i), lvStr(name, i), state, lvLong(cpu, i),
+                            tx, tx != null ? lvLong(elapsed, i) : null, lvStr(service, i)));
+                }
+                rows.sort((a, b) -> Long.compare(b.cpuMs(), a.cpuMs())); // busiest first
+                boolean truncated = rows.size() > Limits.THREAD_MAX_ROWS;
+                if (truncated) {
+                    rows = new ArrayList<>(rows.subList(0, Limits.THREAD_MAX_ROWS));
+                }
+                out.add(new ThreadListDto(o.objHash(), o.objName(), n, states, rows, truncated));
+            } catch (Exception e) {
+                if (!isEof(e)) {
+                    throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+                }
+                // EOF: the agent did not answer (down or foreign agent type) - skip this instance.
+            } finally {
+                TcpProxy.close(tcp);
+            }
         }
         return out;
     }
