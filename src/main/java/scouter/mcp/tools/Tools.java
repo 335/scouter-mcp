@@ -94,6 +94,9 @@ public final class Tools {
             result.put("hint", Messages.get(locale, "hint.search_scan_cap", res.examined()));
         } else if (res.truncated()) {
             result.put("hint", Messages.get(locale, "hint.search_limit"));
+        } else if (rows.isEmpty() && res.serviceLooksLikeApp()) {
+            // The service token matched an application objName: steer to objNameLike, not to a wider window.
+            result.put("hint", Messages.get(locale, "hint.search_service_is_app", params.service().trim()));
         } else if (rows.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }
@@ -114,6 +117,8 @@ public final class Tools {
         result.put("services", res.services());
         if (res.scanCapReached()) {
             result.put("hint", Messages.get(locale, "hint.summary_scan_cap", res.examined()));
+        } else if (res.services().isEmpty() && res.serviceLooksLikeApp()) {
+            result.put("hint", Messages.get(locale, "hint.search_service_is_app", params.service().trim()));
         } else if (res.services().isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }

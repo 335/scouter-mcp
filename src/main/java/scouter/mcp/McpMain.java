@@ -60,8 +60,15 @@ public final class McpMain {
             7. list_alerts / get_active_services — check what fired, and what is running right now (hangs/backlog).
             8. Cross-correlate: take objName + endTimeIso window + txid/gxid and search OpenSearch/Datadog logs.
 
-            Tips: prefer narrow windows and server-side filters (objNameLike/service/login/ip) to avoid the
-            scan cap. Watch truncated/scanCapReached/hint in results and narrow instead of refetching.
+            Tips:
+            - service matches request URLs, NOT app names. App name -> objNameLike; URL fragment -> service.
+              Mixing them up returns 0 rows (the hint will flag it).
+            - 0 rows? Widen the window step by step (now-1h -> now-6h -> now-24h) keeping a filter
+              (objNameLike/service/login/ip) — windows over 5 minutes require one.
+            - Prefer narrow windows and server-side filters to avoid the scan cap. Watch
+              truncated/scanCapReached/hint in results and narrow instead of refetching.
+            - This MCP only reads monitoring data from the Scouter collector. The monitored applications
+              (their source code) live in their own repositories, not here.
             """;
 
     private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {

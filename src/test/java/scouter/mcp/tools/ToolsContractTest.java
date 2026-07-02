@@ -55,11 +55,27 @@ class ToolsContractTest {
     }
 
     @Test
+    void searchEmptyWithAppNameInServiceFilterSuggestsObjNameLike() {
+        // The classic wandering case: the model put an app name ("shop-order-api") into the service
+        // (=request URL) filter -> 0 rows. The result flags it and the hint must steer to objNameLike.
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.searchXlog(any())).thenReturn(
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, true));
+
+        String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, "shop-order-api",
+                        null, null, null, null, false, 20));
+
+        assertThat(json).contains("objNameLike");
+        assertThat(json).contains("shop-order-api");
+    }
+
+    @Test
     void serviceSummaryToolRendersAggregatesAndScanSignal() {
         ScouterClient client = mock(ScouterClient.class);
         XlogSummaryResult res = new XlogSummaryResult(
                 List.of(new ServiceSummaryDto("/api/order", 120, 3, 0.025d, 42.5d, 900, 780)),
-                120, true, 200_000);
+                120, true, 200_000, false);
         when(client.getServiceSummary(any())).thenReturn(res);
 
         String json = Tools.renderServiceSummary(Locale.ENGLISH, client,

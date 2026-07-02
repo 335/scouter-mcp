@@ -324,7 +324,26 @@ public final class TcpScouterClient implements ScouterClient {
         boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
         boolean truncated = stoppedByLimit[0] || scanCapReached;
 
-        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0]);
+        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0],
+                kept.isEmpty() && serviceFilterLooksLikeApp(params.service()));
+    }
+
+    /**
+     * Detects the classic mistake behind empty results: an application name ("shop-order-api") passed
+     * as the service filter, which matches request URLs, never app names. If the token matches an
+     * objName, the caller should have used objNameLike — surfaced as a targeted hint instead of the
+     * generic "widen the window" advice. Only evaluated on empty results (one OBJECT_LIST round-trip).
+     */
+    private boolean serviceFilterLooksLikeApp(String service) {
+        if (service == null || service.isBlank()) {
+            return false;
+        }
+        try {
+            return !TargetResolver.match(listObjectsImpl(), service).isEmpty();
+        } catch (RuntimeException e) {
+            log.debug("service-vs-app check skipped: cause={}", String.valueOf(e.getMessage()));
+            return false;
+        }
     }
 
     /**
@@ -504,10 +523,12 @@ public final class TcpScouterClient implements ScouterClient {
             }
         }
 
-        return buildSummary(byService, examined[0], capped[0]);
+        boolean looksLikeApp = byService.isEmpty() && serviceFilterLooksLikeApp(params.service());
+        return buildSummary(byService, examined[0], capped[0], looksLikeApp);
     }
 
-    private XlogSummaryResult buildSummary(Map<Integer, ServiceAcc> byService, int examined, boolean capped) {
+    private XlogSummaryResult buildSummary(Map<Integer, ServiceAcc> byService, int examined, boolean capped,
+                                           boolean serviceLooksLikeApp) {
         // Decode service names in one GET_TEXT_PACK batch per day (objName is not needed here).
         TextDictionary dict = new TextDictionary(server, null);
         Map<Long, Set<Integer>> byYmd = new HashMap<>();
@@ -532,7 +553,7 @@ public final class TcpScouterClient implements ScouterClient {
         if (list.size() > Limits.SUMMARY_MAX_SERVICES) {
             list = new ArrayList<>(list.subList(0, Limits.SUMMARY_MAX_SERVICES));
         }
-        return new XlogSummaryResult(list, totalCount, capped, examined);
+        return new XlogSummaryResult(list, totalCount, capped, examined, serviceLooksLikeApp);
     }
 
     /**
