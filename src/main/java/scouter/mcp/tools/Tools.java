@@ -93,6 +93,24 @@ public final class Tools {
     public static String renderGetCounter(Locale locale, ScouterClient client, List<Integer> objHashes,
                                           String counter, long fromMillis, long toMillis) {
         List<CounterSeriesDto> series = client.getCounter(objHashes, counter, fromMillis, toMillis);
+        return renderSeriesResult(locale, client, counter, series, null, "hint.counter_empty");
+    }
+
+    public static String renderCounterStat(Locale locale, ScouterClient client, List<Integer> objHashes,
+                                           String counter, String sDateYmd, String eDateYmd) {
+        List<CounterSeriesDto> series = client.getCounterStat(objHashes, counter, sDateYmd, eDateYmd);
+        // Fixed 5-min resolution is a property of the collector's daily-stat DB - surface it so the
+        // model does not mistake the coarse series for missing data.
+        Map<String, Object> extra = new LinkedHashMap<>();
+        extra.put("resolution", "5m");
+        extra.put("sDate", sDateYmd);
+        extra.put("eDate", eDateYmd);
+        return renderSeriesResult(locale, client, counter, series, extra, "hint.counter_stat_empty");
+    }
+
+    private static String renderSeriesResult(Locale locale, ScouterClient client, String counter,
+                                             List<CounterSeriesDto> series, Map<String, Object> extra,
+                                             String emptyHintKey) {
         // objHash alone is unusable as a label: resolve names once so each series carries objName plus
         // the short app/instance labels (models otherwise truncate long objNames from the wrong end).
         Map<Integer, String> names = new LinkedHashMap<>();
@@ -130,10 +148,13 @@ public final class Tools {
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("counter", counter);
+        if (extra != null) {
+            result.putAll(extra);
+        }
         result.put("count", series.size());
         result.put("series", rendered);
         if (series.isEmpty()) {
-            result.put("hint", Messages.get(locale, "hint.counter_empty"));
+            result.put("hint", Messages.get(locale, emptyHintKey));
         }
         try {
             return MAPPER.writeValueAsString(result);

@@ -234,6 +234,21 @@ class ToolsContractTest {
     }
 
     @Test
+    void counterStatRendersSeriesWithResolutionMarker() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.getCounterStat(any(), eq("TPS"), eq("20260601"), eq("20260630"))).thenReturn(List.of(
+                new CounterSeriesDto(101, "TPS", List.of(
+                        new PackMapper.Point(1000L, 10d), new PackMapper.Point(2000L, 20d)))));
+        when(client.listObjects()).thenReturn(List.of());
+
+        String json = Tools.renderCounterStat(Locale.ENGLISH, client, List.of(101), "TPS",
+                "20260601", "20260630");
+
+        assertThat(json).contains("\"counter\":\"TPS\"").contains("\"resolution\":\"5m\"");
+        assertThat(json).contains("101").contains("\"avg\":15.0");
+    }
+
+    @Test
     void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
         // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.

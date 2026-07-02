@@ -29,6 +29,10 @@ public interface ScouterClient extends AutoCloseable {
     // Available counter metadata for an objType (name/displayName/unit)
     List<CounterMetaDto> listCounters(String objType);
 
+    // Long-range counter stats at fixed 5-minute resolution (COUNTER_PAST_LONGDATE_ALL, daily-stat DB).
+    // Complements getCounter (full resolution, 24h cap) for week/month trend questions.
+    List<CounterSeriesDto> getCounterStat(List<Integer> objHashes, String counter, String sDateYmd, String eDateYmd);
+
     // Search XLogs (transactions). Stops early at the limit/scan cap during streaming and returns a truncation signal as well.
     XlogSearchResult searchXlog(SearchXlogParams params);
 

@@ -586,13 +586,82 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool getCounterStat = readOnlyTool(jsonMapper, "get_counter_stat",
+                "Counter time series over a LONG range (up to 31 days) at fixed 5-minute resolution, from the collector's daily-stat DB - one cheap round-trip. Use for week-over-week trends and 'compare today vs last week'; use get_counter for full-resolution views within 24h.",
+                Schemas.GET_COUNTER_STAT);
+
+        McpServerFeatures.SyncToolSpecification getCounterStatSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getCounterStat)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        List<Integer> objHashes = asIntList(arguments, "objHashes");
+                        String objType = asString(arguments, "objType");
+                        String objNameLike = asString(arguments, "objNameLike");
+                        if (objHashes.isEmpty() && objType == null && objNameLike == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    Messages.get(config.locale(), "error.counter_obj_required"));
+                        }
+                        if (objHashes.isEmpty() && objNameLike != null) {
+                            objHashes = resolveObjHashesByNameLike(client, objNameLike, config);
+                        }
+                        if (objHashes.isEmpty() && objType != null) {
+                            objHashes = resolveObjHashesByType(client, objType);
+                        }
+                        int totalObj = objHashes.size();
+                        boolean objTruncated = totalObj > Limits.COUNTER_MAX_OBJ;
+                        if (objTruncated) {
+                            objHashes = objHashes.subList(0, Limits.COUNTER_MAX_OBJ);
+                        }
+                        String counter = asString(arguments, "counter");
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        if (toMillis - fromMillis <= 0) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    Messages.get(config.locale(), "error.from_after_to"));
+                        }
+                        String sDate = TimeRange.yyyymmdd(fromMillis, config.zone());
+                        String eDate = TimeRange.yyyymmdd(toMillis, config.zone());
+                        long days = java.time.temporal.ChronoUnit.DAYS.between(
+                                java.time.LocalDate.parse(sDate, java.time.format.DateTimeFormatter.BASIC_ISO_DATE),
+                                java.time.LocalDate.parse(eDate, java.time.format.DateTimeFormatter.BASIC_ISO_DATE)) + 1;
+                        if (days > Limits.DAILY_STAT_MAX_DAYS) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    Messages.get(config.locale(), "error.stat_window_too_long",
+                                            Limits.DAILY_STAT_MAX_DAYS));
+                        }
+                        String json = Tools.renderCounterStat(config.locale(), client, objHashes, counter,
+                                sDate, eDate);
+                        McpSchema.CallToolResult.Builder rb = McpSchema.CallToolResult.builder().addTextContent(json);
+                        if (objTruncated) {
+                            String note = Messages.get(config.locale(), "note.counter_obj_truncated",
+                                    Limits.COUNTER_MAX_OBJ, totalObj);
+                            rb.addTextContent(MAPPER.writeValueAsString(java.util.Map.of("note", note)));
+                        }
+                        return rb.build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
                         listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec,
-                        getObjectEnvSpec, getSummarySpec)
+                        getObjectEnvSpec, getSummarySpec, getCounterStatSpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 

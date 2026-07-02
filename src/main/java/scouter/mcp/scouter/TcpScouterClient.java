@@ -187,6 +187,60 @@ public final class TcpScouterClient implements ScouterClient {
     }
 
     @Override
+    public List<CounterSeriesDto> getCounterStat(List<Integer> objHashes, String counter,
+                                                 String sDateYmd, String eDateYmd) {
+        return SessionRetry.execute(() -> getCounterStatImpl(objHashes, counter, sDateYmd, eDateYmd), this::relogin);
+    }
+
+    private List<CounterSeriesDto> getCounterStatImpl(List<Integer> objHashes, String counter,
+                                                      String sDateYmd, String eDateYmd) {
+        // COUNTER_PAST_LONGDATE_ALL: {counter, sDate, eDate, objHash:ListValue} -> per (day x objHash)
+        // MapPack{objHash,time,value} stream at fixed 5-min resolution (daily-stat DB). One round-trip
+        // covers the whole range (the server iterates days), so no DaySplitter here. Param keys are
+        // camelCase: sDate/eDate.
+        long startedAt = System.currentTimeMillis();
+        MapPack param = new MapPack();
+        param.put(ParamConstant.COUNTER, counter);
+        param.put(ParamConstant.SDATE, sDateYmd);
+        param.put(ParamConstant.EDATE, eDateYmd);
+        ListValue lv = param.newList(ParamConstant.OBJ_HASH);
+        if (objHashes != null) {
+            for (Integer h : objHashes) {
+                lv.add((long) h);
+            }
+        }
+        Map<Integer, List<PackMapper.Point>> merged = new LinkedHashMap<>();
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            tcp.process(RequestCmd.COUNTER_PAST_LONGDATE_ALL, param, in -> {
+                Pack p = in.readPack();
+                if (p instanceof MapPack mp) {
+                    int objHash = mp.getInt(ParamConstant.OBJ_HASH);
+                    merged.computeIfAbsent(objHash, k -> new ArrayList<>())
+                            .addAll(PackMapper.toPoints(mp.getList(ParamConstant.TIME),
+                                    mp.getList(ParamConstant.VALUE)));
+                }
+            });
+        } catch (Exception e) {
+            if (!isEof(e)) {
+                throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+            }
+            // EOF: no stat data in the range - routine.
+        } finally {
+            TcpProxy.close(tcp);
+        }
+        List<CounterSeriesDto> out = new ArrayList<>(merged.size());
+        for (Map.Entry<Integer, List<PackMapper.Point>> e : merged.entrySet()) {
+            e.getValue().sort(java.util.Comparator.comparingLong(PackMapper.Point::timeMillis));
+            out.add(new CounterSeriesDto(e.getKey(), counter, e.getValue()));
+        }
+        log.info("get_counter_stat done: counter={}, objs={}, series={}, tookMs={}",
+                counter, objHashes == null ? 0 : objHashes.size(), out.size(),
+                System.currentTimeMillis() - startedAt);
+        return out;
+    }
+
+    @Override
     public List<CounterMetaDto> listCounters(String objType) {
         return SessionRetry.execute(() -> listCountersImpl(objType), this::relogin);
     }

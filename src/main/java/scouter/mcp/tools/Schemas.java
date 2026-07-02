@@ -34,6 +34,21 @@ public final class Schemas {
         }
         """;
 
+    public static final String GET_COUNTER_STAT = """
+        {
+          "type": "object",
+          "properties": {
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (max 20 instances). PREFER THIS over objHashes."},
+            "objHashes": {"type": "array", "items": {"type": "integer"}, "description": "Target object hashes (advanced)"},
+            "objType": {"type": "string", "description": "Targets all objects of this type (capped at 20 instances)"},
+            "counter": {"type": "string", "description": "Counter name (e.g. TPS, Cpu, Heap)"},
+            "from": {"type": "string", "description": "Start time (e.g. now-7d, 2026-06-01). Day granularity, up to 31 days"},
+            "to": {"type": "string", "description": "End time (e.g. now)"}
+          },
+          "required": ["counter", "from", "to"]
+        }
+        """;
+
     public static final String LIST_COUNTERS = """
         {
           "type": "object",
