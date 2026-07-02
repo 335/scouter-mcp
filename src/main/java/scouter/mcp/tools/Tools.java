@@ -100,8 +100,8 @@ public final class Tools {
     }
 
     public static String renderXlogDetail(ScouterClient client, long txid, String yyyymmdd,
-                                          boolean includeBindParams, boolean maskSensitive) {
-        XLogDetailDto detail = client.getXlogDetail(txid, yyyymmdd, includeBindParams, maskSensitive);
+                                          boolean includeBindParams) {
+        XLogDetailDto detail = client.getXlogDetail(txid, yyyymmdd, includeBindParams);
         try {
             return MAPPER.writeValueAsString(detail);
         } catch (Exception e) {

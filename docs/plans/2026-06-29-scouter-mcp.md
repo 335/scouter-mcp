@@ -2,7 +2,6 @@
 
 > **상태: 구현 완료.** 코드가 최종 기준이다. 아래는 실행 중 발견된 계획서 정오(Errata):
 > - **Task 3(TimeRange):** 테스트 상수 `1782486000000L`은 오류(2일 어긋남)였고 실제값 `1782658800000L`(=`2026-06-29T00:00:00+09:00`)로 정정함. 프로덕션 로직은 불변.
-> - **Task 4(Masker):** 적용 순서는 `SECRET_KV → EMAIL → LONG_DIGITS → PHONE`이 맞다(계획의 PHONE→LONG_DIGITS는 오류 — `9001011234567` 같은 13자리 안에 전화번호 패턴이 잡혀 손상됨).
 > - **Task 11(get_xlog_detail):** `sqls[]`에 `rows?` 미포함. 조회 실패 에러코드는 `INTERNAL`(초안의 PROTOCOL_MISMATCH 대신).
 > - **공통:** 모든 도구 핸들러는 예외를 MCP tool-error(`isError=true`, `{code,message,hints}`)로 반환하고 `McpError.toLogLine()`으로 stderr 로깅한다. `txid`/`gxid` 입력 스키마는 64비트 정밀도 보존을 위해 `string`.
 
@@ -45,7 +44,6 @@ scouter-mcp/
    │  ├─ McpMain.java               # stdio 진입점, 도구 등록
    │  ├─ config/Config.java         # env 로딩/검증 (순수)
    │  ├─ time/TimeRange.java        # ISO/상대표현 ↔ epochMs, yyyymmdd, TZ (순수)
-   │  ├─ masking/Masker.java        # 민감정보 마스킹 (순수)
    │  ├─ error/McpError.java        # 에러코드 + 메시지 모델 (순수)
    │  ├─ client/                    # vendored Scouter TCP 클라이언트 (포팅)
    │  │  ├─ Server.java
@@ -66,12 +64,11 @@ scouter-mcp/
    └─ test/java/scouter/mcp/
       ├─ config/ConfigTest.java
       ├─ time/TimeRangeTest.java
-      ├─ masking/MaskerTest.java
       ├─ scouter/PackMapperTest.java
       └─ tools/ToolsContractTest.java
 ```
 
-원칙: 순수 로직(config/time/masking/error/packmapper)은 외부 의존 없이 단위테스트로 TDD. 네트워크 의존(client/scouter)은 `ScouterClient`를 인터페이스로 두고 도구 계약 테스트에서 mock.
+원칙: 순수 로직(config/time/error/packmapper)은 외부 의존 없이 단위테스트로 TDD. 네트워크 의존(client/scouter)은 `ScouterClient`를 인터페이스로 두고 도구 계약 테스트에서 mock.
 
 ---
 
@@ -424,125 +421,6 @@ Expected: PASS. (만약 `parsesIso8601` 기대값이 환경 차로 어긋나면,
 - [ ] **Step 5: Commit**
 ```bash
 git add -A && git commit -m "feat: TimeRange 시간 파싱/포맷 추가"
-```
-
----
-
-## Task 4: 민감정보 마스킹 (Masker)
-
-XLog 상세의 SQL/바인드 파라미터에 PII가 포함될 수 있다. 기본 마스킹 on. 패턴: 13~16자리 연속 숫자(카드/주민 유사), 이메일, 전화번호(010-xxxx-xxxx 류), `password|passwd|pwd|token|secret` 키워드 인접 값.
-
-**Files:**
-- Create: `src/main/java/scouter/mcp/masking/Masker.java`
-- Test: `src/test/java/scouter/mcp/masking/MaskerTest.java`
-
-- [ ] **Step 1: 실패 테스트 작성**
-
-`src/test/java/scouter/mcp/masking/MaskerTest.java`:
-```java
-package scouter.mcp.masking;
-
-import org.junit.jupiter.api.Test;
-import static org.assertj.core.api.Assertions.assertThat;
-
-class MaskerTest {
-
-    private final Masker masker = new Masker();
-
-    @Test
-    void masksLongDigitSequences() {
-        assertThat(masker.mask("card=1234567812345678")).isEqualTo("card=****************");
-        assertThat(masker.mask("jumin=9001011234567")).isEqualTo("jumin=*************");
-    }
-
-    @Test
-    void masksEmail() {
-        assertThat(masker.mask("to=hong@example.com")).isEqualTo("to=****@****");
-    }
-
-    @Test
-    void masksPhone() {
-        assertThat(masker.mask("phone=010-1234-5678")).isEqualTo("phone=***-****-****");
-    }
-
-    @Test
-    void masksSecretKeyedValues() {
-        assertThat(masker.mask("password=abcd1234")).contains("password=").doesNotContain("abcd1234");
-        assertThat(masker.mask("token : xyz.JWT.tok")).doesNotContain("xyz.JWT.tok");
-    }
-
-    @Test
-    void keepsShortNumbersAndPlainText() {
-        assertThat(masker.mask("rows=42 status=OK")).isEqualTo("rows=42 status=OK");
-    }
-}
-```
-
-- [ ] **Step 2: 실패 확인**
-
-Run: `./gradlew test --tests "scouter.mcp.masking.MaskerTest"`
-Expected: FAIL.
-
-- [ ] **Step 3: 구현**
-
-`src/main/java/scouter/mcp/masking/Masker.java`:
-```java
-package scouter.mcp.masking;
-
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
-public final class Masker {
-
-    private static final Pattern EMAIL =
-            Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
-    private static final Pattern PHONE =
-            Pattern.compile("01[016789]-?\\d{3,4}-?\\d{4}");
-    private static final Pattern LONG_DIGITS =
-            Pattern.compile("\\b\\d{13,16}\\b");
-    private static final Pattern SECRET_KV =
-            Pattern.compile("(?i)(password|passwd|pwd|token|secret)\\s*[=:]\\s*\\S+");
-
-    public String mask(String input) {
-        if (input == null || input.isEmpty()) {
-            return input;
-        }
-        String s = input;
-        s = maskMatches(SECRET_KV, s, m -> {
-            String full = m.group();
-            int sep = Math.max(full.indexOf('='), full.indexOf(':'));
-            return full.substring(0, sep + 1) + "****";
-        });
-        s = maskMatches(EMAIL, s, m -> "****@****");
-        s = maskMatches(PHONE, s, m -> "***-****-****");
-        s = maskMatches(LONG_DIGITS, s, m -> "*".repeat(m.group().length()));
-        return s;
-    }
-
-    private interface Repl {
-        String apply(Matcher m);
-    }
-
-    private static String maskMatches(Pattern p, String s, Repl repl) {
-        Matcher m = p.matcher(s);
-        StringBuilder sb = new StringBuilder();
-        while (m.find()) {
-            m.appendReplacement(sb, Matcher.quoteReplacement(repl.apply(m)));
-        }
-        m.appendTail(sb);
-        return sb.toString();
-    }
-}
-```
-
-- [ ] **Step 4: 통과 확인**
-
-Run: `./gradlew test --tests "scouter.mcp.masking.MaskerTest"`
-Expected: PASS. (phone 테스트가 `010-1234-5678`처럼 하이픈 포함 시 `***-****-****`가 되도록 PHONE 매칭 후 치환 문자열을 고정값으로 둔 점에 유의. 만약 매칭 우선순위 이슈가 나면 PHONE을 LONG_DIGITS보다 먼저 적용하는 현재 순서를 유지.)
-
-- [ ] **Step 5: Commit**
-```bash
-git add -A && git commit -m "feat: 민감정보 Masker 추가"
 ```
 
 ---
@@ -1348,7 +1226,7 @@ git add -A && git commit -m "feat: search_xlog 도구 및 XLog 매핑/텍스트 
 - Create: `src/main/java/scouter/mcp/scouter/dto/XLogDetailDto.java`
 - Create: `src/main/java/scouter/mcp/scouter/dto/StepDto.java`
 - Modify: `ScouterClient.java`/`TcpScouterClient.java`/`Tools.java`/`Schemas.java`/`McpMain.java`
-- Test: `src/test/java/scouter/mcp/scouter/ProfileMaskingTest.java`
+- Test: `src/test/java/scouter/mcp/scouter/PackMapperTest.java`
 
 - [ ] **Step 1: Step 디코드 경로 확인**
 
@@ -1356,31 +1234,29 @@ Run:
 ```bash
 curl -s "https://raw.githubusercontent.com/scouter-project/scouter/v2.20.0/scouter.webapp/src/main/java/scouterx/webapp/layer/consumer/ProfileConsumer.java" | sed -n '40,90p'
 ```
-scouter-common `scouter.lang.step.*`(Step, StepEnum, SqlStep, SqlStep2/3, MessageStep, ApiCallStep 등) 구조 확인. SQL 텍스트/바인드는 SqlStep의 hash(sql) + param(바인드 문자열). dict로 sql 텍스트 디코드, 바인드 문자열은 그대로(이후 Masker 적용).
+scouter-common `scouter.lang.step.*`(Step, StepEnum, SqlStep, SqlStep2/3, MessageStep, ApiCallStep 등) 구조 확인. SQL 텍스트/바인드는 SqlStep의 hash(sql) + param(바인드 문자열). dict로 sql 텍스트 디코드, 바인드 문자열은 그대로 반환.
 
-- [ ] **Step 2: Profile→StepDto 매핑 + 마스킹 단위테스트**
+- [ ] **Step 2: Profile→StepDto 매핑 단위테스트**
 
-`ProfileMaskingTest`: SqlStep(샘플 sql + 바인드 "1234567812345678, hong@example.com") → StepDto 변환 시 `maskSensitive=true`면 바인드/SQL에 Masker 적용되어 카드/이메일이 마스킹, `false`면 원문 유지. (Masker는 Task 4 결과 재사용.)
+`PackMapperTest`: SqlStep(샘플 sql + 바인드 "1234567812345678, hong@example.com") → StepDto 변환 시 sql 텍스트/바인드/elapsed가 그대로 매핑되는지 검증.
 ```java
 // 핵심 단언
-assertThat(detailMasked.sqls().get(0).bindParams()).noneMatch(s -> s.contains("1234567812345678"));
-assertThat(detailRaw.sqls().get(0).bindParams()).anyMatch(s -> s.contains("1234567812345678"));
+assertThat(detail.sqls().get(0).bindParams()).anyMatch(s -> s.contains("1234567812345678"));
 ```
 
 - [ ] **Step 3: 실패 확인 → 구현 → 통과**
 
-`StepDto`/`XLogDetailDto` 정의. `PackMapper.toDetail(XLogPack summary, Step[] steps, zone, dict, Masker, boolean maskSensitive)` 구현:
+`StepDto`/`XLogDetailDto` 정의. `PackMapper.toDetail(XLogPack summary, Step[] steps, zone, includeBindParams, dict)` 구현:
 - summary: XLogRowDto와 동일 필드 + 전체 elapsed/cpu.
 - steps: type/name/elapsedMs.
-- sqls: SqlStep만 추려 `{sql(dict 디코드 후 mask), bindParams[](mask), elapsedMs}`.
+- sqls: SqlStep만 추려 `{sql(dict 디코드), bindParams[], elapsedMs}`.
 - errors: error hash 디코드.
-Run: `./gradlew test --tests "scouter.mcp.scouter.ProfileMaskingTest"` → PASS.
+Run: `./gradlew test --tests "scouter.mcp.scouter.PackMapperTest"` → PASS.
 
 - [ ] **Step 4: ScouterClient.getXlogDetail / getXlogByGxid + 도구화**
 
-`getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive)`:
+`getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams)`:
 - `XLOG_READ_BY_TXID`로 XLogPack, `TRANX_PROFILE`로 Step[] → `toDetail`.
-- `maskSensitive=false`면 `McpError` 없이 진행하되 stderr에 감사 로그 1줄(`code=AUDIT action=unmask txid=...`, 값은 미기록).
 `getXlogByGxid(long gxid, String yyyymmdd)`: `XLOG_READ_BY_GXID` → List<XLogRowDto>.
 `Tools.renderXlogDetail` / `renderXlogByGxid` + `Schemas` + `McpMain` 등록.
 > yyyymmdd는 호출자가 안 주면 txid 검색 시점/`to` 기준으로 `TimeRange.yyyymmdd`로 산출. 입력 스키마에 `date`(yyyymmdd optional), `at`(ISO/상대, optional) 중 하나로 날짜 결정.
@@ -1392,7 +1268,7 @@ Expected: BUILD SUCCESSFUL.
 
 - [ ] **Step 6: Commit**
 ```bash
-git add -A && git commit -m "feat: get_xlog_detail/get_xlog_by_gxid 도구 및 바인드 마스킹"
+git add -A && git commit -m "feat: get_xlog_detail/get_xlog_by_gxid 도구"
 ```
 
 ---
@@ -1441,7 +1317,7 @@ Expected: `build/libs/scouter-mcp-0.1.0-all.jar` 생성.
 
 - [ ] **Step 3: README 작성**
 
-`README.md`에: 개요, 아키텍처 1문단, 빌드(`./gradlew shadowJar`), 등록 방법(`.mcp.json.example`), 도구 6종 표(이름/용도/주요 입력), 보안 주의(읽기 전용·마스킹 기본 on·자격증명 env), Apache-2.0 포팅 코드 고지(`scouter.mcp.client` 패키지는 scouter.webapp v2.20.0에서 포팅, NOTICE 포함).
+`README.md`에: 개요, 아키텍처 1문단, 빌드(`./gradlew shadowJar`), 등록 방법(`.mcp.json.example`), 도구 6종 표(이름/용도/주요 입력), 보안 주의(읽기 전용·자격증명 env), Apache-2.0 포팅 코드 고지(`scouter.mcp.client` 패키지는 scouter.webapp v2.20.0에서 포팅, NOTICE 포함).
 
 - [ ] **Step 4: 실제 Claude Code 연동 검증(env 있을 때)**
 
@@ -1463,7 +1339,7 @@ git add -A && git commit -m "build: fat jar 및 등록 문서/README 추가"
 - get_xlog_by_gxid → Task 11 ✓
 - get_counter → Task 9 ✓
 - list_counters → Task 9 ✓
-- 연결/세션(§5) → Task 6/7 ✓ / 마스킹(§6) → Task 4 + Task 11 ✓ / 에러모델(§6) → Task 2 ✓ / 시간처리(§5) → Task 3 ✓ / 패키징·등록 → Task 12 ✓
+- 연결/세션(§5) → Task 6/7 ✓ / 에러모델(§6) → Task 2 ✓ / 시간처리(§5) → Task 3 ✓ / 패키징·등록 → Task 12 ✓
 
 **미해결(구현 중 1차 출처로 확정할 항목, placeholder 아님):**
 - `SEARCH_XLOG_LIST`/`COUNTER_PAST_TIME_ALL`의 정확한 MapPack 키명·타입 → Task 9 Step5 / Task 10 Step1에서 해당 Consumer 소스로 확정(명령·접근 위치 명시됨).
@@ -1471,4 +1347,4 @@ git add -A && git commit -m "build: fat jar 및 등록 문서/README 추가"
 - mcp 2.0.0 import 경로 → Task 8 Step7 컴파일로 확정.
 이들은 "무엇을·어디서 확인하는지"가 구체적으로 적혀 있어 실행 가능하다.
 
-**타입 일관성:** `ScouterClient`(Task 7 정의) 메서드가 Task 9/10/11에서 확장되며 동일 시그니처 사용. `PackMapper.Point`/`toPoints`(Task 9) → Task 10/11에서 재사용. `Masker`(Task 4) → Task 11에서 재사용. `Config`/`TimeRange`/`McpError` 명칭 전 Task 일관.
+**타입 일관성:** `ScouterClient`(Task 7 정의) 메서드가 Task 9/10/11에서 확장되며 동일 시그니처 사용. `PackMapper.Point`/`toPoints`(Task 9) → Task 10/11에서 재사용. `Config`/`TimeRange`/`McpError` 명칭 전 Task 일관.

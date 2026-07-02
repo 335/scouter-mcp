@@ -65,10 +65,9 @@ Scouter Collector Server (기존 사내 서버, 무변경)
 - 상관 키(txid/gxid/endTime/objName) 항상 포함.
 
 ### 4.3 `get_xlog_detail` — XLog 상세 (바인드 파라미터·SQL)
-- 입력: `txid`(필수), `gxid?`, `includeBindParams?`(기본 true), `maskSensitive?`(기본 true)
+- 입력: `txid`(필수), `gxid?`, `includeBindParams?`(기본 true)
 - 내부 커맨드: `XLOG_READ_BY_TXID` + 프로파일(스텝/SQL/바인드) 로드
 - 출력: `{ summary{...}, steps:[{ type, name, elapsedMs }], sqls:[{ sql, bindParams[], elapsedMs, rows? }], errors:[...] }`
-- 마스킹 정책 적용(§6).
 
 ### 4.4 `get_xlog_by_gxid` — 분산 트랜잭션 묶음 조회
 - 입력: `gxid`(필수)
@@ -112,15 +111,7 @@ Scouter Collector Server (기존 사내 서버, 무변경)
 ### 페이지네이션/리밋
 - `search_xlog` 기본 100, 상한 1000. 초과 시 `truncated:true` 표시 + 기간 축소 힌트(조용한 절단 금지).
 
-## 6. 에러 처리 · 민감정보 마스킹 · 보안
-
-### 민감정보 마스킹 (바인드 파라미터)
-- `get_xlog_detail`의 바인드 파라미터/SQL에 회원 도메인 PII(주민번호 유사값, 카드번호, 연락처, 이메일, 비밀번호/토큰)가 포함될 수 있음.
-- 정책:
-  - `maskSensitive`(기본 `true`): 패턴 기반 마스킹(카드/주민 유사 13~16자리, 이메일, 전화번호, `password|passwd|pwd|token|secret` 키 인접 값).
-  - 마스킹 룰은 설정/환경변수로 패턴 추가 가능.
-  - `maskSensitive:false`를 **명시**해야만 원문 노출, 이 경우 감사 로그 기록.
-- MCP 서버 로그도 단일 라인 `key=value`, 바인드 값은 미로깅(개수/길이만).
+## 6. 에러 처리 · 보안
 
 ### 에러 처리 (정직한 표면화)
 - 연결 실패: `SCOUTER_CONNECT_FAILED` + 점검 항목(host/port/방화벽). 무한 재시도 금지(짧은 백오프 후 명확 실패).
@@ -153,7 +144,6 @@ scouter-mcp/
 │  │   ├─ ScouterClient.kt   # TcpProxy 래핑, 로그인/세션 풀/재연결
 │  │   ├─ RequestCmds.kt     # 사용 커맨드 상수 모음
 │  │   └─ PackMapper.kt      # Pack ↔ 정규화 JSON 변환
-│  ├─ masking/Masker.kt      # 민감정보 마스킹 룰
 │  ├─ time/TimeRange.kt      # ISO/상대표현 ↔ epochMs, TZ
 │  └─ config/Config.kt       # env 로딩/검증
 └─ src/test/kotlin/...
@@ -165,12 +155,11 @@ scouter-mcp/
 
 - 단위(외부 의존 없음):
   - `PackMapper`: 샘플 Pack ↔ 정규화 JSON 골든 테스트.
-  - `Masker`: 카드/주민/이메일/전화/비밀키 마스킹, false 설정 시 원문.
   - `TimeRange`: `now-1h`/ISO/경계값, TZ 변환.
   - `Config`: env 누락/형식오류 검증.
 - 계약(MCP 레벨): 각 도구 입력 스키마 검증·에러코드 반환을 ScouterClient mock으로 검증.
 - 통합(옵션, 수동): 실제 dev collector 스모크. 자격증명 env 있을 때만 도는 태그드 테스트(CI 비활성).
-- TDD: PackMapper·Masker·TimeRange 등 순수 로직부터 테스트 우선.
+- TDD: PackMapper·TimeRange 등 순수 로직부터 테스트 우선.
 
 ## 9. 사용하는 Scouter 요청 커맨드 (확인됨, `scouter.common/RequestCmd`)
 

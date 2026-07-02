@@ -8,7 +8,6 @@ import scouter.lang.step.MethodStep;
 import scouter.lang.step.SqlStep;
 import scouter.lang.step.Step;
 import scouter.lang.value.ListValue;
-import scouter.mcp.masking.Masker;
 import scouter.mcp.scouter.Hexa32;
 import scouter.mcp.scouter.dto.SqlStepDto;
 import scouter.mcp.scouter.dto.StepDto;
@@ -134,36 +133,14 @@ public final class PackMapper {
                 p.cpu, p.sqlCount, endTimeMillis, endTimeIso);
     }
 
-    // Applies masking to SQL text and bind parameters (pure transformation, network-independent -> unit testable).
-    // If mask=false, returns the original unchanged.
-    public static List<SqlStepDto> maskSqls(List<SqlStepDto> raw, boolean mask, Masker masker) {
-        if (raw == null) {
-            return new ArrayList<>();
-        }
-        if (!mask) {
-            return new ArrayList<>(raw);
-        }
-        List<SqlStepDto> out = new ArrayList<>(raw.size());
-        for (SqlStepDto s : raw) {
-            String maskedSql = masker.mask(s.sql());
-            List<String> maskedBinds = new ArrayList<>(s.bindParams().size());
-            for (String b : s.bindParams()) {
-                maskedBinds.add(masker.mask(b));
-            }
-            out.add(new SqlStepDto(maskedSql, maskedBinds, s.elapsedMs()));
-        }
-        return out;
-    }
-
     // Assembles XLog detail (summary + step list + SQL list + errors).
     // summary: result of mapping the XLOG_READ_BY_TXID response via toXLogRow.
     // steps: flattens the entire profile Step[] into type/name/elapsed.
     // sqls: extracts only SQL-family steps (text resolved via dict.sql, binds wrap the single param string in a list).
-    //   If includeBindParams=false, binds is an empty list. If maskSensitive=true, masking is applied to SQL/binds.
+    //   If includeBindParams=false, binds is an empty list.
     // errors: collected from the summary error + APICALL error steps (if any).
     public static XLogDetailDto toDetail(XLogRowDto summary, Step[] steps, long yyyymmdd,
-                                         boolean includeBindParams, boolean maskSensitive,
-                                         Masker masker, TextResolver dict) {
+                                         boolean includeBindParams, TextResolver dict) {
         List<StepDto> stepDtos = new ArrayList<>();
         List<SqlStepDto> rawSqls = new ArrayList<>();
         List<String> errors = new ArrayList<>();
@@ -206,8 +183,7 @@ public final class PackMapper {
             }
         }
 
-        List<SqlStepDto> sqls = maskSqls(rawSqls, maskSensitive, masker);
-        return new XLogDetailDto(summary, stepDtos, sqls, errors);
+        return new XLogDetailDto(summary, stepDtos, rawSqls, errors);
     }
 
     // Step type name. Prefers getStepTypeName based on scouter StepEnum, falling back to the class name on failure.

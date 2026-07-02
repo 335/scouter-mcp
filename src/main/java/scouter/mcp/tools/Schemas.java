@@ -66,8 +66,7 @@ public final class Schemas {
             "txid": {"type": "string", "description": "Transaction ID — either the raw decimal long OR the Hexa32 string shown in the Scouter client (e.g. 'z3st744n3d2p6q'). Both are accepted."},
             "date": {"type": "string", "description": "Date the transaction occurred, yyyyMMdd (e.g. '20260701'). IMPORTANT: the collector stores XLogs in per-day partitions keyed by this date, so the lookup fails silently if the date is wrong. When calling from a search_xlog result, pass the date portion of that row's endTimeIso. If omitted, derived from 'at' or today."},
             "at": {"type": "string", "description": "Alternative to 'date': an ISO timestamp or relative expression (e.g. '2026-07-01T17:28:00+09:00', 'now-1h'). The date is extracted automatically. Use the endTimeIso value from the search_xlog result to avoid wrong-date misses."},
-            "includeBindParams": {"type": "boolean", "description": "Whether to include bind parameters (default true)"},
-            "maskSensitive": {"type": "boolean", "description": "Whether to mask sensitive data (default true)"}
+            "includeBindParams": {"type": "boolean", "description": "Whether to include bind parameters (default true)"}
           },
           "required": ["txid"]
         }

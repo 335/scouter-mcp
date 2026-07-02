@@ -16,7 +16,6 @@ import scouter.lang.value.BlobValue;
 import scouter.lang.value.ListValue;
 import scouter.lang.value.Value;
 import scouter.net.RequestCmd;
-import scouter.mcp.masking.Masker;
 import scouter.mcp.client.LoginMgr;
 import scouter.mcp.client.LoginRequest;
 import scouter.mcp.client.Server;
@@ -50,7 +49,6 @@ public final class TcpScouterClient implements ScouterClient {
     private static final int MAX_PROFILE_BLOCK = 10;
 
     private final Config config;
-    private final Masker masker = new Masker();
     private Server server;
 
     public TcpScouterClient(Config config) {
@@ -307,14 +305,9 @@ public final class TcpScouterClient implements ScouterClient {
     }
 
     @Override
-    public XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive) {
+    public XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams) {
         // Ported from webapp XLogConsumer.retrieveByTxid + ProfileConsumer.retrieveProfile.
         // 1) XLOG_READ_BY_TXID(getSingle) -> XLogPack summary. 2) TRANX_PROFILE(getSingle) -> XLogProfilePack.profile -> Step[].
-        if (!maskSensitive) {
-            // An unmasked (sensitive) lookup writes one audit log line (bind values are never logged).
-            log.warn("code=AUDIT action=unmask txid={}", txid);
-        }
-
         TextDictionary dict = new TextDictionary(server, buildObjNameMap());
         long ymd = Long.parseLong(yyyymmdd);
 
@@ -365,7 +358,7 @@ public final class TcpScouterClient implements ScouterClient {
             TcpProxy.close(tcp);
         }
 
-        return PackMapper.toDetail(summary, steps, ymd, includeBindParams, maskSensitive, masker, dict);
+        return PackMapper.toDetail(summary, steps, ymd, includeBindParams, dict);
     }
 
     @Override

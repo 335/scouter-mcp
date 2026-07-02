@@ -100,11 +100,11 @@ class SmokeIT {
                                 + " err=" + r.error() + " endIso=" + r.endTimeIso()));
             }
 
-            // get_xlog_detail (if rows exist, fetch first row detail + verify bind parameter masking)
+            // get_xlog_detail (if rows exist, fetch first row detail)
             if (rows != null && !rows.isEmpty()) {
                 XLogRowDto first = rows.get(0);
                 String ymd = TimeRange.yyyymmdd(first.endTimeMillis(), c.zone());
-                XLogDetailDto detail = client.getXlogDetail(first.txid(), ymd, true, true);
+                XLogDetailDto detail = client.getXlogDetail(first.txid(), ymd, true);
                 int stepCount = detail.steps() == null ? 0 : detail.steps().size();
                 int sqlCount = detail.sqls() == null ? 0 : detail.sqls().size();
                 System.err.println("[smoke] get_xlog_detail txid=" + first.txid()
@@ -179,7 +179,7 @@ class SmokeIT {
             if (rows != null) {
                 for (XLogRowDto r : rows.stream().limit(10).toList()) {
                     String ymd = TimeRange.yyyymmdd(r.endTimeMillis(), c.zone());
-                    XLogDetailDto d = client.getXlogDetail(r.txid(), ymd, true, true);
+                    XLogDetailDto d = client.getXlogDetail(r.txid(), ymd, true);
                     int sqlCnt = d.sqls() == null ? 0 : d.sqls().size();
                     if (sqlCnt > 0) {
                         found = d;

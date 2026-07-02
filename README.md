@@ -39,7 +39,7 @@ Copy `.mcp.json.example` and fill in the absolute jar path and credentials.
 |---|---|---|
 | `list_objects` | List objects/agents | `objType?`, `nameLike?` |
 | `search_xlog` | Search XLogs (latency/errors) | `from`, `to`, `objHash?`, `service?`, `minElapsedMs?`, `onlyError?`, `limit?` (default 20, max 200) |
-| `get_xlog_detail` | XLog detail (SQL/bind params) | `txid`, `date?`/`at?`, `includeBindParams?` (default true), `maskSensitive?` (default true) |
+| `get_xlog_detail` | XLog detail (SQL/bind params) | `txid`, `date?`/`at?`, `includeBindParams?` (default true) |
 | `get_xlog_by_gxid` | Distributed-transaction group | `gxid`, `date?`/`at?` |
 | `get_counter` | Counter time series | `objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | Available counters for an objType | `objType` |
@@ -71,8 +71,6 @@ structured stderr logs (`key=value`) remain English for a stable contract and lo
 
 - Read-only against the Collector.
 - Credentials are injected via environment variables only (never in files or arguments as plaintext).
-- Bind parameters are masked by default. Setting `maskSensitive=false` writes a single audit log line;
-  the actual values are never written to logs.
 - stdout is reserved for JSON-RPC, so all logs go to stderr only.
 
 ## License / Notice

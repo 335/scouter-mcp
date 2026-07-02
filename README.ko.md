@@ -39,7 +39,7 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 |---|---|---|
 | `list_objects` | 오브젝트/에이전트 목록 | `objType?`, `nameLike?` |
 | `search_xlog` | XLog 검색(응답속도/에러) | `from`, `to`, `objHash?`, `service?`, `minElapsedMs?`, `onlyError?`, `limit?`(기본 20, 최대 200) |
-| `get_xlog_detail` | XLog 상세(SQL/바인드 파라미터) | `txid`, `date?`/`at?`, `includeBindParams?`(기본 true), `maskSensitive?`(기본 true) |
+| `get_xlog_detail` | XLog 상세(SQL/바인드 파라미터) | `txid`, `date?`/`at?`, `includeBindParams?`(기본 true) |
 | `get_xlog_by_gxid` | 분산 트랜잭션 묶음 | `gxid`, `date?`/`at?` |
 | `get_counter` | 카운터 시계열 | `objHashes`\|`objType`, `counter`, `from`, `to` |
 | `list_counters` | objType 지원 카운터 목록 | `objType` |
@@ -69,8 +69,6 @@ Java 17 기반이며 `scouter-common`을 재사용하고 `scouter.webapp`의 net
 
 - Collector에 대해 읽기 전용으로만 동작한다.
 - 자격증명은 환경변수로만 주입한다(파일/인자에 평문 금지).
-- 바인드 파라미터는 기본 마스킹된다. `maskSensitive=false`로 해제 시 감사 로그를 1줄 남기며
-  실제 값은 로그에 기록하지 않는다.
 - stdout은 JSON-RPC 전용이므로 모든 로그는 stderr로만 출력한다.
 
 ## 라이선스/고지

@@ -25,8 +25,8 @@ public interface ScouterClient extends AutoCloseable {
     // Search XLogs (transactions). Stops early at the limit/scan cap during streaming and returns a truncation signal as well.
     XlogSearchResult searchXlog(SearchXlogParams params);
 
-    // Single XLog detail (summary + profile steps/SQL/errors). Bind parameters are masked when maskSensitive=true.
-    XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams, boolean maskSensitive);
+    // Single XLog detail (summary + profile steps/SQL/errors).
+    XLogDetailDto getXlogDetail(long txid, String yyyymmdd, boolean includeBindParams);
 
     // List of XLogs belonging to the same gxid (global transaction).
     List<XLogRowDto> getXlogByGxid(long gxid, String yyyymmdd);

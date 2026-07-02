@@ -226,8 +226,7 @@ public final class McpMain {
                         long txid = requireLong(arguments, "txid");
                         String yyyymmdd = resolveYyyymmdd(arguments, config);
                         boolean includeBindParams = !Boolean.FALSE.equals(asBoolean(arguments, "includeBindParams"));
-                        boolean maskSensitive = !Boolean.FALSE.equals(asBoolean(arguments, "maskSensitive"));
-                        String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams, maskSensitive);
+                        String json = Tools.renderXlogDetail(client, txid, yyyymmdd, includeBindParams);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
                                 .build();
