@@ -48,7 +48,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00). Start narrow (now-1h) and widen stepwise (now-6h -> now-24h) only when results are empty"},
             "to": {"type": "string", "description": "End time (e.g. now)"},
             "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment as the user says it (e.g. 'shop-order-api'). Case-insensitive; resolved to ALL matching instances (k8s pods, alive first, max 20) and queried across them. PREFER THIS over objHash — objHash embeds the pod name and changes every deploy. If nothing matches, the error lists candidate names."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike). Only use a value obtained from list_objects in this session."},
@@ -56,8 +56,8 @@ public final class Schemas {
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch). Effective for tracing a specific user's requests; also relaxes the 5-minute unfiltered-window limit."},
             "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch). Also counts as a server-side filter for the window limit."},
             "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)."},
-            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). Client-side filter"},
-            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. Client-side filter"},
+            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). CLIENT-SIDE: the collector streams every row before this drops them - always combine with a server-side filter (service/objNameLike), or prefer get_service_summary/get_summary for 'which is slow' questions"},
+            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. CLIENT-SIDE (rows are streamed then dropped) - combine with a server-side filter, or prefer get_summary category=error"},
             "limit": {"type": "integer", "description": "Max rows to return (default 20, max 200). Keep small at production traffic"}
           },
           "required": ["from", "to"]
@@ -94,7 +94,7 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00)"},
+            "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00). Start narrow (now-1h) and widen stepwise only when results are empty"},
             "to": {"type": "string", "description": "End time (e.g. now)"},
             "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (e.g. 'shop-order-api'). Case-insensitive; aggregates over ALL matching instances. PREFER THIS over objHash."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike)"},
@@ -102,8 +102,8 @@ public final class Schemas {
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch)"},
             "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch)"},
             "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)"},
-            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). Client-side filter"},
-            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. Client-side filter"}
+            "minElapsedMs": {"type": "integer", "description": "Filter: minimum elapsed time (ms). CLIENT-SIDE: rows are streamed from the collector before this drops them - combine with a server-side filter (service/objNameLike)"},
+            "onlyError": {"type": "boolean", "description": "Filter: error transactions only. CLIENT-SIDE - combine with a server-side filter, or prefer get_summary category=error"}
           },
           "required": ["from", "to"]
         }
