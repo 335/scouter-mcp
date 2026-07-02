@@ -78,4 +78,17 @@ class SearchPolicyTest {
                 client().searchXlog(new SearchXlogParams(now, now, 123L, null, null, null, null, null, null, false, 20)))
                 .isInstanceOf(McpError.class);
     }
+
+    @Test
+    void rejectsQueriesOverThePassBudget() {
+        assertThatThrownBy(() ->
+                TcpScouterClient.ensurePassBudget(Limits.MAX_QUERY_PASSES + 1, java.util.Locale.ENGLISH))
+                .isInstanceOf(McpError.class)
+                .matches(e -> ((McpError) e).code() == McpError.Code.INVALID_INPUT);
+    }
+
+    @Test
+    void allowsQueriesWithinThePassBudget() {
+        TcpScouterClient.ensurePassBudget(Limits.MAX_QUERY_PASSES, java.util.Locale.ENGLISH); // no throw
+    }
 }

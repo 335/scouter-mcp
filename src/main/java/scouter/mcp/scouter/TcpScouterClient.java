@@ -204,6 +204,16 @@ public final class TcpScouterClient implements ScouterClient {
         return out;
     }
 
+    /** Fan-out guard: (instances x day segments) round-trips per request must stay within the pass budget. */
+    static void ensurePassBudget(int passes, java.util.Locale locale) {
+        if (passes > Limits.MAX_QUERY_PASSES) {
+            throw McpError.of(McpError.Code.INVALID_INPUT,
+                            Messages.get(locale, "error.too_many_passes", passes, Limits.MAX_QUERY_PASSES))
+                    .withHint("passes", String.valueOf(passes))
+                    .withHint("maxPasses", String.valueOf(Limits.MAX_QUERY_PASSES));
+        }
+    }
+
     /** Sentinel for early streaming termination (normal flow control, not an error). */
     private static final class StopStreaming extends RuntimeException {
         StopStreaming() {
@@ -323,9 +333,14 @@ public final class TcpScouterClient implements ScouterClient {
         final int[] examined = {0};
         final boolean[] stoppedByLimit = {false};
 
+        List<DaySplitter.Segment> segments =
+                DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone());
+        ensurePassBudget(targetHashes.size() * segments.size(), config.locale());
+        long startedAt = System.currentTimeMillis();
+
         outer:
         for (Long hash : targetHashes) {
-            for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+            for (DaySplitter.Segment seg : segments) {
                 boolean stop = scanXlogSegment(seg, hash, servicePattern, params, limit, kept, examined, stoppedByLimit);
                 if (stop) {
                     break outer;
@@ -335,6 +350,11 @@ public final class TcpScouterClient implements ScouterClient {
 
         boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
         boolean truncated = stoppedByLimit[0] || scanCapReached;
+
+        // Structured stderr telemetry: per-request fan-out/scan volume for post-hoc load analysis.
+        log.info("search_xlog done: passes={}, examined={}, kept={}, truncated={}, tookMs={}",
+                targetHashes.size() * segments.size(), examined[0], kept.size(), truncated,
+                System.currentTimeMillis() - startedAt);
 
         boolean looksLikeApp = false;
         List<String> candidates = List.of();
@@ -578,6 +598,8 @@ public final class TcpScouterClient implements ScouterClient {
                 passes.add(new Pass(hash, seg));
             }
         }
+        ensurePassBudget(passes.size(), config.locale());
+        long startedAt = System.currentTimeMillis();
         for (Pass qp : passes) {
             Long objHash = qp.hash();
             DaySplitter.Segment seg = qp.seg();
@@ -635,6 +657,9 @@ public final class TcpScouterClient implements ScouterClient {
                 break;
             }
         }
+
+        log.info("get_service_summary done: passes={}, examined={}, services={}, capped={}, tookMs={}",
+                passes.size(), examined[0], byService.size(), capped[0], System.currentTimeMillis() - startedAt);
 
         boolean looksLikeApp = false;
         List<String> candidates = List.of();
