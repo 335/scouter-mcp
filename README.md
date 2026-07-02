@@ -17,7 +17,7 @@ the Collector are read-only.
 
 ```bash
 ./gradlew shadowJar
-# output: build/libs/scouter-mcp-0.1.0-all.jar
+# output: build/libs/scouter-mcp-<version>-all.jar
 ```
 
 The `.mcpb` bundle is produced only by the release CI (which wraps this jar); local builds just
@@ -57,7 +57,7 @@ two collectors at once. For multiple collectors — which usually differ in thei
   "mcpServers": {
     "scouter-prod": {
       "command": "java",
-      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-<version>-all.jar"],
       "env": {
         "SCOUTER_COLLECTOR_HOST": "prod-collector", "SCOUTER_COLLECTOR_PORT": "6100",
         "SCOUTER_USER": "prod-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
@@ -65,7 +65,7 @@ two collectors at once. For multiple collectors — which usually differ in thei
     },
     "scouter-stg": {
       "command": "java",
-      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-0.1.0-all.jar"],
+      "args": ["-jar", "/ABSOLUTE/PATH/scouter-mcp-<version>-all.jar"],
       "env": {
         "SCOUTER_COLLECTOR_HOST": "stg-collector", "SCOUTER_COLLECTOR_PORT": "6100",
         "SCOUTER_USER": "stg-user", "SCOUTER_PASSWORD": "***", "SCOUTER_TZ": "Asia/Seoul"
