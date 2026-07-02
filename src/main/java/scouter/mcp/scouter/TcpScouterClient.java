@@ -38,7 +38,11 @@ import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ServiceSummaryDto;
 import scouter.mcp.policy.Truncate;
+import scouter.mcp.scouter.dto.AlertSummaryRowDto;
 import scouter.mcp.scouter.dto.EnvDto;
+import scouter.mcp.scouter.dto.ErrorSummaryRowDto;
+import scouter.mcp.scouter.dto.SummaryResult;
+import scouter.mcp.scouter.dto.SummaryRowDto;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.ThreadRowDto;
@@ -1145,6 +1149,252 @@ public final class TcpScouterClient implements ScouterClient {
         } finally {
             TcpProxy.close(tcp);
         }
+    }
+
+    @Override
+    public SummaryResult getSummary(String category, long fromMillis, long toMillis,
+                                    String objType, Long objHash, String objNameLike) {
+        return SessionRetry.execute(
+                () -> getSummaryImpl(category, fromMillis, toMillis, objType, objHash, objNameLike), this::relogin);
+    }
+
+    private static String summaryCmd(String category) {
+        return switch (category) {
+            case "service" -> RequestCmd.LOAD_SERVICE_SUMMARY;
+            case "sql" -> RequestCmd.LOAD_SQL_SUMMARY;
+            case "apiCall" -> RequestCmd.LOAD_APICALL_SUMMARY;
+            case "ip" -> RequestCmd.LOAD_IP_SUMMARY;
+            case "userAgent" -> RequestCmd.LOAD_UA_SUMMARY;
+            case "error" -> RequestCmd.LOAD_SERVICE_ERROR_SUMMARY;
+            case "alert" -> RequestCmd.LOAD_ALERT_SUMMARY;
+            default -> null;
+        };
+    }
+
+    /** Accumulator for id-keyed summary rows merged across days/instances. */
+    static final class SumAcc {
+        long count;
+        long error;
+        long elapsed;
+        long anyYmd;
+        long sampleTxid;
+        int serviceHash;
+        int messageHash;
+        String title;
+        int level;
+    }
+
+    private SummaryResult getSummaryImpl(String category, long fromMillis, long toMillis,
+                                         String objType, Long objHash, String objNameLike) {
+        // LOAD_*_SUMMARY: {date, stime, etime, objType?, objHash} -> single columnar MapPack per day.
+        // The collector pre-aggregates, so this never streams XLog rows: the cheapest wide-window tool.
+        String cmd = summaryCmd(category);
+        if (cmd == null) {
+            throw McpError.of(McpError.Code.INVALID_INPUT,
+                    Messages.get(config.locale(), "error.summary_bad_category", String.valueOf(category)));
+        }
+        if (toMillis - fromMillis <= 0) {
+            throw McpError.of(McpError.Code.INVALID_INPUT, Messages.get(config.locale(), "error.from_after_to"));
+        }
+        List<DaySplitter.Segment> segments = DaySplitter.splitByCalendarDay(fromMillis, toMillis, config.zone());
+        if (segments.size() > Limits.DAILY_STAT_MAX_DAYS) {
+            throw McpError.of(McpError.Code.INVALID_INPUT,
+                    Messages.get(config.locale(), "error.summary_window_too_long", Limits.DAILY_STAT_MAX_DAYS));
+        }
+        // Target: explicit objHash > fuzzy objNameLike (per-instance fan-out) > objType (server-side) > all.
+        List<Integer> hashes = new ArrayList<>();
+        if (objHash != null && objHash != 0L) {
+            hashes.add(objHash.intValue());
+        } else if (objNameLike != null && !objNameLike.isBlank()) {
+            for (SObjectDto o : resolveAliveTargets(objNameLike, null, Limits.SEARCH_MAX_OBJ)) {
+                hashes.add(o.objHash());
+            }
+        } else {
+            hashes.add(0); // 0 = no objHash restriction (whole objType / whole collector)
+        }
+        ensurePassBudget(hashes.size() * segments.size(), config.locale());
+        long startedAt = System.currentTimeMillis();
+
+        Map<String, SumAcc> acc = new LinkedHashMap<>();
+        for (Integer h : hashes) {
+            for (DaySplitter.Segment seg : segments) {
+                MapPack param = new MapPack();
+                String ymd = scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone());
+                param.put(ParamConstant.DATE, ymd);
+                param.put(ParamConstant.STIME, seg.fromMillis());
+                param.put(ParamConstant.ETIME, seg.toMillis());
+                if (objType != null && !objType.isBlank()) {
+                    param.put(ParamConstant.OBJ_TYPE, objType.trim());
+                }
+                param.put(ParamConstant.OBJ_HASH, h);
+                TcpProxy tcp = TcpProxy.getTcpProxy(server);
+                try {
+                    Pack p = tcp.getSingle(cmd, param);
+                    if (p instanceof MapPack mp) {
+                        mergeSummaryDay(category, mp, Long.parseLong(ymd), acc);
+                    }
+                } catch (Exception e) {
+                    if (!isEof(e)) {
+                        throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+                    }
+                    // EOF: no summary data for this day/target - routine.
+                } finally {
+                    TcpProxy.close(tcp);
+                }
+            }
+        }
+        SummaryResult result = buildSummaryResult(category, acc);
+        log.info("get_summary done: category={}, passes={}, rows={}, tookMs={}",
+                category, hashes.size() * segments.size(), acc.size(), System.currentTimeMillis() - startedAt);
+        return result;
+    }
+
+    /**
+     * Fold one day's columnar summary MapPack into the id-keyed accumulator. For the error category the
+     * "error" column is a TEXT HASH (not a count) and rows are keyed by (id,error,service); everywhere
+     * else count/error/elapsed are additive metrics keyed by id alone.
+     */
+    static void mergeSummaryDay(String category, MapPack mp, long ymd, Map<String, SumAcc> acc) {
+        ListValue id = mp.getList("id");
+        int n = id != null ? id.size() : 0;
+        ListValue count = mp.getList("count");
+        ListValue error = mp.getList("error");
+        ListValue elapsed = mp.getList("elapsed");
+        ListValue service = mp.getList("service");
+        ListValue message = mp.getList("message");
+        ListValue txid = mp.getList("txid");
+        ListValue title = mp.getList("title");
+        ListValue level = mp.getList("level");
+        for (int i = 0; i < n; i++) {
+            String key;
+            if ("error".equals(category)) {
+                key = id.getInt(i) + ":" + (error != null ? error.getInt(i) : 0)
+                        + ":" + (service != null ? service.getInt(i) : 0);
+            } else {
+                key = String.valueOf(id.getInt(i));
+            }
+            SumAcc a = acc.computeIfAbsent(key, k -> new SumAcc());
+            if (a.anyYmd == 0) {
+                a.anyYmd = ymd;
+            }
+            a.count += count != null && i < count.size() ? count.getLong(i) : 0;
+            if ("error".equals(category)) {
+                a.serviceHash = service != null ? service.getInt(i) : 0;
+                a.messageHash = message != null && i < message.size() ? message.getInt(i) : 0;
+                a.error = error != null ? error.getInt(i) : 0; // error text hash (not a count)
+                if (a.sampleTxid == 0 && txid != null && i < txid.size()) {
+                    a.sampleTxid = txid.getLong(i);
+                }
+            } else {
+                a.error += error != null && i < error.size() ? error.getLong(i) : 0;
+                a.elapsed += elapsed != null && i < elapsed.size() ? elapsed.getLong(i) : 0;
+            }
+            if ("alert".equals(category)) {
+                if (a.title == null && title != null && i < title.size()) {
+                    a.title = title.getString(i);
+                }
+                a.level = level != null && i < level.size() ? level.getInt(i) : 0;
+            }
+        }
+    }
+
+    private SummaryResult buildSummaryResult(String category, Map<String, SumAcc> acc) {
+        // Sort by count desc, cap rows, then batch-resolve hashes to text (one GET_TEXT_PACK per day).
+        List<Map.Entry<String, SumAcc>> entries = new ArrayList<>(acc.entrySet());
+        entries.sort((a, b) -> Long.compare(b.getValue().count, a.getValue().count));
+        boolean truncated = entries.size() > Limits.SUMMARY_TOOL_MAX_ROWS;
+        if (truncated) {
+            entries = entries.subList(0, Limits.SUMMARY_TOOL_MAX_ROWS);
+        }
+        TextDictionary dict = new TextDictionary(server, null);
+        String textType = switch (category) {
+            case "service" -> TextTypes.SERVICE;
+            case "sql" -> TextTypes.SQL;
+            case "apiCall" -> TextTypes.APICALL;
+            case "userAgent" -> TextTypes.USER_AGENT;
+            default -> null;
+        };
+        if (textType != null) {
+            Map<Long, Set<Integer>> byYmd = new HashMap<>();
+            for (Map.Entry<String, SumAcc> e : entries) {
+                byYmd.computeIfAbsent(e.getValue().anyYmd, k -> new LinkedHashSet<>())
+                        .add(Integer.parseInt(e.getKey()));
+            }
+            byYmd.forEach((ymd, hs) -> dict.prefetch(textType, ymd, hs));
+        }
+        if ("error".equals(category)) {
+            Map<Long, Set<Integer>> errByYmd = new HashMap<>();
+            Map<Long, Set<Integer>> svcByYmd = new HashMap<>();
+            for (Map.Entry<String, SumAcc> e : entries) {
+                SumAcc a = e.getValue();
+                errByYmd.computeIfAbsent(a.anyYmd, k -> new LinkedHashSet<>()).add((int) a.error);
+                errByYmd.computeIfAbsent(a.anyYmd, k -> new LinkedHashSet<>()).add(a.messageHash);
+                svcByYmd.computeIfAbsent(a.anyYmd, k -> new LinkedHashSet<>()).add(a.serviceHash);
+            }
+            errByYmd.forEach((ymd, hs) -> dict.prefetch(TextTypes.ERROR, ymd, hs));
+            svcByYmd.forEach((ymd, hs) -> dict.prefetch(TextTypes.SERVICE, ymd, hs));
+        }
+
+        List<SummaryRowDto> rows = null;
+        List<ErrorSummaryRowDto> errorRows = null;
+        List<AlertSummaryRowDto> alertRows = null;
+        switch (category) {
+            case "service", "sql", "apiCall" -> {
+                rows = new ArrayList<>(entries.size());
+                for (Map.Entry<String, SumAcc> e : entries) {
+                    SumAcc a = e.getValue();
+                    int hash = Integer.parseInt(e.getKey());
+                    String raw = dict.text(textType, a.anyYmd, hash);
+                    String name = Truncate.text(raw != null ? raw : "#" + hash, Limits.SQL_TEXT_MAX_CHARS);
+                    double avg = a.count == 0 ? 0 : (double) a.elapsed / a.count;
+                    rows.add(new SummaryRowDto(name, a.count, a.error, a.elapsed, Math.round(avg * 10) / 10.0));
+                }
+            }
+            case "ip" -> {
+                rows = new ArrayList<>(entries.size());
+                for (Map.Entry<String, SumAcc> e : entries) {
+                    // Summary stores client IPs int-encoded; IPUtil renders the dotted form.
+                    String ip = scouter.util.IPUtil.toString(Integer.parseInt(e.getKey()));
+                    rows.add(new SummaryRowDto(ip, e.getValue().count, null, null, null));
+                }
+            }
+            case "userAgent" -> {
+                rows = new ArrayList<>(entries.size());
+                for (Map.Entry<String, SumAcc> e : entries) {
+                    SumAcc a = e.getValue();
+                    int hash = Integer.parseInt(e.getKey());
+                    String ua = dict.text(textType, a.anyYmd, hash);
+                    rows.add(new SummaryRowDto(ua != null ? ua : "#" + hash, a.count, null, null, null));
+                }
+            }
+            case "error" -> {
+                errorRows = new ArrayList<>(entries.size());
+                for (Map.Entry<String, SumAcc> e : entries) {
+                    SumAcc a = e.getValue();
+                    String err = dict.error(a.anyYmd, (int) a.error);
+                    String svc = dict.service(a.anyYmd, a.serviceHash);
+                    String msg = dict.error(a.anyYmd, a.messageHash);
+                    errorRows.add(new ErrorSummaryRowDto(
+                            Truncate.text(err != null ? err : "#" + a.error, Limits.ERROR_TEXT_MAX_CHARS),
+                            svc != null ? svc : "#" + a.serviceHash,
+                            Truncate.text(msg != null ? msg : "#" + a.messageHash, Limits.ERROR_TEXT_MAX_CHARS),
+                            a.count,
+                            a.sampleTxid != 0 ? Hexa32.toString32(a.sampleTxid) : null));
+                }
+            }
+            case "alert" -> {
+                alertRows = new ArrayList<>(entries.size());
+                for (Map.Entry<String, SumAcc> e : entries) {
+                    SumAcc a = e.getValue();
+                    alertRows.add(new AlertSummaryRowDto(
+                            a.title != null ? a.title : "#" + e.getKey(),
+                            AlertLevel.getName((byte) a.level), a.count));
+                }
+            }
+            default -> {
+            }
+        }
+        return new SummaryResult(category, entries.size(), truncated, rows, errorRows, alertRows);
     }
 
     private static String textOrNull(MapPack mp, String key) {

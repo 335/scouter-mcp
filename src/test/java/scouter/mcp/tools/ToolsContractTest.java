@@ -208,6 +208,32 @@ class ToolsContractTest {
     }
 
     @Test
+    void summaryRendersSqlCategoryTopRows() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.getSummary(eq("sql"), anyLong(), anyLong(), isNull(), isNull(), eq("app"))).thenReturn(
+                new scouter.mcp.scouter.dto.SummaryResult("sql", 2, false,
+                        List.of(new scouter.mcp.scouter.dto.SummaryRowDto("SELECT * FROM t", 100, 1L, 5000L, 50.0),
+                                new scouter.mcp.scouter.dto.SummaryRowDto("UPDATE t SET x=1", 10, 0L, 100L, 10.0)),
+                        null, null));
+
+        String json = Tools.renderSummary(Locale.ENGLISH, client, "sql", 0, 1000, null, null, "app");
+
+        assertThat(json).contains("SELECT * FROM t").contains("\"category\":\"sql\"");
+        assertThat(json).doesNotContain("errorRows"); // NON_NULL omission
+    }
+
+    @Test
+    void summaryEmptyGetsHint() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.getSummary(eq("error"), anyLong(), anyLong(), isNull(), isNull(), isNull())).thenReturn(
+                new scouter.mcp.scouter.dto.SummaryResult("error", 0, false, null, List.of(), null));
+
+        String json = Tools.renderSummary(Locale.ENGLISH, client, "error", 0, 1000, null, null, null);
+
+        assertThat(json).contains("hint");
+    }
+
+    @Test
     void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
         // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.

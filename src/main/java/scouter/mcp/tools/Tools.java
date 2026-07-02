@@ -13,6 +13,7 @@ import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.EnvDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.SummaryResult;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
@@ -336,6 +337,38 @@ public final class Tools {
         result.put("note", Messages.get(locale, "note.env_masked"));
         if (rendered.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.env_empty"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static String renderSummary(Locale locale, ScouterClient client, String category,
+                                       long fromMillis, long toMillis, String objType, Long objHash,
+                                       String objNameLike) {
+        SummaryResult res = client.getSummary(category, fromMillis, toMillis, objType, objHash, objNameLike);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("category", res.category());
+        result.put("rowCount", res.totalRows());
+        if (res.truncated()) {
+            result.put("truncated", true);
+        }
+        if (res.rows() != null) {
+            result.put("rows", res.rows());
+        }
+        if (res.errorRows() != null) {
+            result.put("errorRows", res.errorRows());
+        }
+        if (res.alertRows() != null) {
+            result.put("alertRows", res.alertRows());
+        }
+        boolean empty = (res.rows() == null || res.rows().isEmpty())
+                && (res.errorRows() == null || res.errorRows().isEmpty())
+                && (res.alertRows() == null || res.alertRows().isEmpty());
+        if (empty) {
+            result.put("hint", Messages.get(locale, "hint.summary_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);

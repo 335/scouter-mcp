@@ -7,6 +7,7 @@ import scouter.mcp.scouter.dto.CounterSeriesDto;
 import scouter.mcp.scouter.dto.EnvDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
+import scouter.mcp.scouter.dto.SummaryResult;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.XLogDetailDto;
@@ -58,6 +59,11 @@ public interface ScouterClient extends AutoCloseable {
 
     // JVM system properties of one agent (OBJECT_ENV). Fuzzy targets resolve to the first alive instance.
     EnvDto getObjectEnv(String objNameLike, Long objHash);
+
+    // Daily pre-aggregated summary (LOAD_*_SUMMARY). category: service|sql|apiCall|ip|userAgent|error|alert.
+    // The window is split per calendar day; id hashes are text-resolved after merging.
+    SummaryResult getSummary(String category, long fromMillis, long toMillis,
+                             String objType, Long objHash, String objNameLike);
 
     @Override
     void close();

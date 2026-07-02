@@ -68,6 +68,11 @@ public final class TextDictionary implements PackMapper.TextResolver {
         return resolve(TextTypes.METHOD, yyyymmdd, hash);
     }
 
+    /** Generic typed resolver for callers outside the TextResolver interface (apicall, user_agent, ...). */
+    public String text(String type, long yyyymmdd, int hash) {
+        return resolve(type, yyyymmdd, hash);
+    }
+
     /**
      * Batch-resolve many hashes of one type/date in a single GET_TEXT_PACK round-trip and populate the cache.
      * This avoids the per-row round-trips that would otherwise occur when mapping large result sets.

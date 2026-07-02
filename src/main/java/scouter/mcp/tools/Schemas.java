@@ -132,6 +132,21 @@ public final class Schemas {
         }
         """;
 
+    public static final String GET_SUMMARY = """
+        {
+          "type": "object",
+          "properties": {
+            "category": {"type": "string", "enum": ["service", "sql", "apiCall", "ip", "userAgent", "error", "alert"], "description": "What to aggregate: service (per-URL), sql (per-statement - 'which SQL is slow/hot'), apiCall (outbound calls), ip (client IPs), userAgent, error (error type x service with a sample txid), alert (alert titles)"},
+            "from": {"type": "string", "description": "Start time (e.g. now-24h, 2026-06-29T10:00). Daily granularity; up to 31 days"},
+            "to": {"type": "string", "description": "End time (e.g. now)"},
+            "objType": {"type": "string", "description": "Filter: object type (e.g. tomcat). Server-side"},
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment, fanned out over matching instances"},
+            "objHash": {"type": "integer", "description": "Filter: a single object hash (advanced)"}
+          },
+          "required": ["category", "from", "to"]
+        }
+        """;
+
     public static final String GET_OBJECT_ENV = """
         {
           "type": "object",

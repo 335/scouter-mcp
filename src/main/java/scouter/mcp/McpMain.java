@@ -551,13 +551,48 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool getSummary = readOnlyTool(jsonMapper, "get_summary",
+                "Daily PRE-AGGREGATED stats from the collector (no XLog scanning, no scan cap - the cheapest wide-window tool). category=sql answers 'which SQL is slowest/hottest today'; error gives error-type x service counts with a sample txid for get_xlog_detail; service/apiCall/ip/userAgent/alert likewise. Top 50 by count. Prefer this over search_xlog for ranking/frequency questions; it is daily-partitioned data, so use day-scale from/to (up to 31 days).",
+                Schemas.GET_SUMMARY);
+
+        McpServerFeatures.SyncToolSpecification getSummarySpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getSummary)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String category = asString(arguments, "category");
+                        if (category == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT, "category is required");
+                        }
+                        long now = System.currentTimeMillis();
+                        long fromMillis = TimeRange.parseInstant(asString(arguments, "from"), config.zone(), now);
+                        long toMillis = TimeRange.parseInstant(asString(arguments, "to"), config.zone(), now);
+                        String objType = asString(arguments, "objType");
+                        String objNameLike = asString(arguments, "objNameLike");
+                        Long objHash = asLong(arguments, "objHash");
+                        String json = Tools.renderSummary(config.locale(), client, category,
+                                fromMillis, toMillis, objType, objHash, objNameLike);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
                         listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec,
-                        getObjectEnvSpec)
+                        getObjectEnvSpec, getSummarySpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 
