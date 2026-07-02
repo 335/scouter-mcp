@@ -97,6 +97,10 @@ public final class Tools {
         } else if (rows.isEmpty() && res.serviceLooksLikeApp()) {
             // The service token matched an application objName: steer to objNameLike, not to a wider window.
             result.put("hint", Messages.get(locale, "hint.search_service_is_app", params.service().trim()));
+        } else if (rows.isEmpty() && res.serviceCandidates() != null && !res.serviceCandidates().isEmpty()) {
+            // Real service names similar to the sloppy query were discovered in the same window.
+            result.put("serviceCandidates", res.serviceCandidates());
+            result.put("hint", Messages.get(locale, "hint.search_service_candidates"));
         } else if (rows.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }
@@ -119,6 +123,9 @@ public final class Tools {
             result.put("hint", Messages.get(locale, "hint.summary_scan_cap", res.examined()));
         } else if (res.services().isEmpty() && res.serviceLooksLikeApp()) {
             result.put("hint", Messages.get(locale, "hint.search_service_is_app", params.service().trim()));
+        } else if (res.services().isEmpty() && res.serviceCandidates() != null && !res.serviceCandidates().isEmpty()) {
+            result.put("serviceCandidates", res.serviceCandidates());
+            result.put("hint", Messages.get(locale, "hint.search_service_candidates"));
         } else if (res.services().isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }

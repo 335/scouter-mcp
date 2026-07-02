@@ -38,9 +38,9 @@ public final class Schemas {
         {
           "type": "object",
           "properties": {
-            "objType": {"type": "string", "description": "Object type (e.g. tomcat)"}
-          },
-          "required": ["objType"]
+            "objType": {"type": "string", "description": "Object type (e.g. tomcat)"},
+            "objNameLike": {"type": "string", "description": "Alternative to objType: fuzzy app-name fragment (e.g. 'shop-order-api') — the objType is derived from the first matching object. Use when the objType is unknown."}
+          }
         }
         """;
 
@@ -52,7 +52,7 @@ public final class Schemas {
             "to": {"type": "string", "description": "End time (e.g. now)"},
             "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment as the user says it (e.g. 'shop-order-api'). Case-insensitive; resolved to ALL matching instances (k8s pods, alive first, max 20) and queried across them. PREFER THIS over objHash — objHash embeds the pod name and changes every deploy. If nothing matches, the error lists candidate names."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike). Only use a value obtained from list_objects in this session."},
-            "service": {"type": "string", "description": "Filter: service name. Substring match by default (server-side StrMatch), so a short token is enough. Example: 'search-order-info-grade' matches '/api/order/ext/order-info/search-order-info-grade<POST>'. Do not guess the full service name. Advanced: if you include '*', the pattern is used as-is."},
+            "service": {"type": "string", "description": "Filter: service (request URL) name. Sloppy input is fine — 'orderDetail', 'GET /api/order/order-detail', 'order-detail POST', or a pasted 'name<POST>' are all normalized (HTTP method extracted, longest token used server-side). Matching is case-sensitive substring; if nothing matches, the result returns serviceCandidates with real service names from the same window — retry with one of those. Advanced: '*' patterns are used as-is."},
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch). Effective for tracing a specific user's requests; also relaxes the 5-minute unfiltered-window limit."},
             "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch). Also counts as a server-side filter for the window limit."},
             "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)."},
@@ -98,7 +98,7 @@ public final class Schemas {
             "to": {"type": "string", "description": "End time (e.g. now)"},
             "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (e.g. 'shop-order-api'). Case-insensitive; aggregates over ALL matching instances. PREFER THIS over objHash."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike)"},
-            "service": {"type": "string", "description": "Filter: service name (substring match, server-side StrMatch)"},
+            "service": {"type": "string", "description": "Filter: service (request URL) name. Sloppy input is normalized like search_xlog; on zero matches, serviceCandidates lists real names"},
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch)"},
             "ip": {"type": "string", "description": "Filter: client IP (server-side StrMatch)"},
             "desc": {"type": "string", "description": "Filter: XLog description text (server-side StrMatch)"},

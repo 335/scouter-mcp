@@ -60,7 +60,7 @@ class ToolsContractTest {
         // (=request URL) filter -> 0 rows. The result flags it and the hint must steer to objNameLike.
         ScouterClient client = mock(ScouterClient.class);
         when(client.searchXlog(any())).thenReturn(
-                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, true));
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, true, List.of()));
 
         String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
                 new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, "shop-order-api",
@@ -71,11 +71,28 @@ class ToolsContractTest {
     }
 
     @Test
+    void searchEmptyWithSloppyServiceReturnsRealCandidates() {
+        // "orderdetail" (wrong case) matched nothing server-side; discovery found the real names.
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.searchXlog(any())).thenReturn(
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, false,
+                        List.of("/api/order/order-detail<GET>", "/api/order/order-detail<POST>")));
+
+        String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, "orderdetail",
+                        null, null, null, null, false, 20));
+
+        assertThat(json).contains("serviceCandidates");
+        assertThat(json).contains("/api/order/order-detail<GET>");
+        assertThat(json).contains("hint");
+    }
+
+    @Test
     void serviceSummaryToolRendersAggregatesAndScanSignal() {
         ScouterClient client = mock(ScouterClient.class);
         XlogSummaryResult res = new XlogSummaryResult(
                 List.of(new ServiceSummaryDto("/api/order", 120, 3, 0.025d, 42.5d, 900, 780)),
-                120, true, 200_000, false);
+                120, true, 200_000, false, List.of());
         when(client.getServiceSummary(any())).thenReturn(res);
 
         String json = Tools.renderServiceSummary(Locale.ENGLISH, client,

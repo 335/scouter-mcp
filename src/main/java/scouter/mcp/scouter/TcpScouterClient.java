@@ -244,13 +244,13 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
-    // Wrap a bare service token as a server-side StrMatch substring pattern (*term*); honor explicit '*'.
+    // Normalize sloppy service input (method words, whitespace, pasted "<POST>" names) into a
+    // StrMatch-safe server pattern. See ServiceQueryNormalizer.
     private static String buildServicePattern(String service) {
         if (service == null || service.isBlank()) {
             return null;
         }
-        String svc = service.trim();
-        return svc.indexOf('*') >= 0 ? svc : "*" + svc + "*";
+        return ServiceQueryNormalizer.normalize(service).serverPattern();
     }
 
     /**
@@ -324,8 +324,16 @@ public final class TcpScouterClient implements ScouterClient {
         boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
         boolean truncated = stoppedByLimit[0] || scanCapReached;
 
+        boolean looksLikeApp = false;
+        List<String> candidates = List.of();
+        if (kept.isEmpty() && params.service() != null && !params.service().isBlank()) {
+            looksLikeApp = serviceFilterLooksLikeApp(params.service());
+            if (!looksLikeApp) {
+                candidates = discoverServiceCandidates(params, targetHashes);
+            }
+        }
         return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0],
-                kept.isEmpty() && serviceFilterLooksLikeApp(params.service()));
+                looksLikeApp, candidates);
     }
 
     /**
@@ -343,6 +351,98 @@ public final class TcpScouterClient implements ScouterClient {
         } catch (RuntimeException e) {
             log.debug("service-vs-app check skipped: cause={}", String.valueOf(e.getMessage()));
             return false;
+        }
+    }
+
+    /**
+     * Empty-result rescue for sloppy service queries the case-sensitive server pattern cannot match
+     * ("orderdetail" vs "orderDetail", reordered words...). Re-scans the same window WITHOUT the service
+     * filter (bounded by SEARCH_SCAN_CAP), decodes the distinct service names seen, and returns the
+     * ones containing every query token case-insensitively (falling back to any-token), ordered by
+     * traffic. The caller retries with an exact name — one extra bounded pass, only on empty results.
+     */
+    private List<String> discoverServiceCandidates(SearchXlogParams params, List<Long> targetHashes) {
+        List<String> tokens = ServiceQueryNormalizer.normalize(params.service()).tokens();
+        Map<Integer, long[]> countAndYmd = new HashMap<>(); // serviceHash -> {count, anyYmd}
+        int[] examined = {0};
+        try {
+            outer:
+            for (Long hash : targetHashes) {
+                for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+                    MapPack param = new MapPack();
+                    param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
+                    param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
+                    param.put(ParamConstant.XLOG_END_TIME, seg.toMillis());
+                    if (hash != null) {
+                        param.put(ParamConstant.OBJ_HASH, hash);
+                    }
+                    TcpProxy tcp = TcpProxy.getTcpProxy(server);
+                    try {
+                        tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
+                            Pack p = in.readPack();
+                            examined[0]++;
+                            if (p instanceof XLogPack xp) {
+                                long ymd = Long.parseLong(scouter.mcp.time.TimeRange.yyyymmdd(xp.endTime, config.zone()));
+                                countAndYmd.computeIfAbsent(xp.service, k -> new long[]{0, ymd})[0]++;
+                            }
+                            if (examined[0] >= Limits.SEARCH_SCAN_CAP) {
+                                throw new StopStreaming();
+                            }
+                        });
+                    } catch (RuntimeException e) {
+                        Throwable cause = e.getCause() != null ? e.getCause() : e;
+                        if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+                            throw e;
+                        }
+                    } finally {
+                        TcpProxy.close(tcp);
+                    }
+                    if (examined[0] >= Limits.SEARCH_SCAN_CAP) {
+                        break outer;
+                    }
+                }
+            }
+
+            TextDictionary dict = new TextDictionary(server, null);
+            Map<Long, Set<Integer>> byYmd = new HashMap<>();
+            countAndYmd.forEach((h, cy) -> byYmd.computeIfAbsent(cy[1], k -> new LinkedHashSet<>()).add(h));
+            byYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.SERVICE, ymd, hashes));
+
+            record Named(String name, long count) {
+            }
+            List<Named> all = new ArrayList<>();
+            countAndYmd.forEach((h, cy) -> {
+                String name = dict.service(cy[1], h);
+                if (name != null) {
+                    all.add(new Named(name, cy[0]));
+                }
+            });
+            List<Named> matched = new ArrayList<>();
+            for (Named n : all) {
+                String lower = n.name().toLowerCase();
+                boolean allTokens = !tokens.isEmpty() && tokens.stream().allMatch(lower::contains);
+                if (allTokens) {
+                    matched.add(n);
+                }
+            }
+            if (matched.isEmpty() && !tokens.isEmpty()) {
+                for (Named n : all) {
+                    String lower = n.name().toLowerCase();
+                    if (tokens.stream().anyMatch(lower::contains)) {
+                        matched.add(n);
+                    }
+                }
+            }
+            matched.sort((a, b) -> Long.compare(b.count(), a.count()));
+            List<String> out = new ArrayList<>();
+            for (int i = 0; i < Math.min(10, matched.size()); i++) {
+                out.add(matched.get(i).name());
+            }
+            return out;
+        } catch (RuntimeException e) {
+            // Discovery is best-effort: never let the rescue pass break the original (empty) result.
+            log.debug("service candidate discovery skipped: cause={}", String.valueOf(e.getMessage()));
+            return List.of();
         }
     }
 
@@ -523,12 +623,19 @@ public final class TcpScouterClient implements ScouterClient {
             }
         }
 
-        boolean looksLikeApp = byService.isEmpty() && serviceFilterLooksLikeApp(params.service());
-        return buildSummary(byService, examined[0], capped[0], looksLikeApp);
+        boolean looksLikeApp = false;
+        List<String> candidates = List.of();
+        if (byService.isEmpty() && params.service() != null && !params.service().isBlank()) {
+            looksLikeApp = serviceFilterLooksLikeApp(params.service());
+            if (!looksLikeApp) {
+                candidates = discoverServiceCandidates(params, targetHashes);
+            }
+        }
+        return buildSummary(byService, examined[0], capped[0], looksLikeApp, candidates);
     }
 
     private XlogSummaryResult buildSummary(Map<Integer, ServiceAcc> byService, int examined, boolean capped,
-                                           boolean serviceLooksLikeApp) {
+                                           boolean serviceLooksLikeApp, List<String> serviceCandidates) {
         // Decode service names in one GET_TEXT_PACK batch per day (objName is not needed here).
         TextDictionary dict = new TextDictionary(server, null);
         Map<Long, Set<Integer>> byYmd = new HashMap<>();
@@ -553,7 +660,7 @@ public final class TcpScouterClient implements ScouterClient {
         if (list.size() > Limits.SUMMARY_MAX_SERVICES) {
             list = new ArrayList<>(list.subList(0, Limits.SUMMARY_MAX_SERVICES));
         }
-        return new XlogSummaryResult(list, totalCount, capped, examined, serviceLooksLikeApp);
+        return new XlogSummaryResult(list, totalCount, capped, examined, serviceLooksLikeApp, serviceCandidates);
     }
 
     /**

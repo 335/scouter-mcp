@@ -4,9 +4,9 @@ import java.util.List;
 
 /**
  * Result of get_service_summary: aggregated services plus scan-coverage signals.
- * serviceLooksLikeApp: see {@link XlogSearchResult#serviceLooksLikeApp()}.
+ * serviceLooksLikeApp / serviceCandidates: see {@link XlogSearchResult}.
  */
 public record XlogSummaryResult(
         List<ServiceSummaryDto> services, int totalCount, boolean scanCapReached, int examined,
-        boolean serviceLooksLikeApp) {
+        boolean serviceLooksLikeApp, List<String> serviceCandidates) {
 }

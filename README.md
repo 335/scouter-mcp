@@ -100,10 +100,22 @@ resolved to **all** matching instances (alive first, capped at 20) and queried a
 objHash needed, ever. If nothing matches, the error is `NOT_FOUND` with a `candidates` hint listing
 actual objNames so the caller can self-correct in one step.
 
+### Sloppy service queries
+
+Scouter service names look like `/api/order/.../search-order-info-grade<POST>`, but users type
+"GET orderDetail" or "order info grade". The `service` filter normalizes such input: an HTTP method is
+extracted from any position (`GET x`, `x POST`, pasted `<POST>`), whitespace-separated words fall back
+to the longest token server-side, and explicit `*` patterns pass through untouched. Server-side
+matching is still case-sensitive — so when a pattern matches nothing, the same window is re-scanned
+(bounded) without the service filter and real service names matching the query tokens
+case-insensitively are returned as `serviceCandidates`, ordered by traffic. One retry with an exact
+name resolves it.
+
 `service`/`login`/`ip`/`desc` use substring match by default (server-side `StrMatch`), so a short token
 like `search-order-info-grade` matches `/api/order/ext/order-info/search-order-info-grade<POST>`.
 `objNameLike`/`login`/`ip`/`desc` count as server-side filters, so they relax the 5-minute
-unfiltered-window cap.
+unfiltered-window cap. `list_counters` also accepts `objNameLike` and derives the objType, so users
+never need to know Scouter's type taxonomy.
 
 All tools are advertised with `readOnlyHint`. A `diagnose_root_cause` MCP prompt exposes the
 recommended tool order for latency/error investigations.

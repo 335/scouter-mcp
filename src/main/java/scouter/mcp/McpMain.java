@@ -63,6 +63,9 @@ public final class McpMain {
             Tips:
             - service matches request URLs, NOT app names. App name -> objNameLike; URL fragment -> service.
               Mixing them up returns 0 rows (the hint will flag it).
+            - Sloppy service input is normalized ("GET orderDetail", "order-detail POST", pasted "name<POST>").
+              Server matching is case-sensitive though — if 0 rows come back with a serviceCandidates list,
+              retry with one of those exact names instead of guessing again.
             - 0 rows? Widen the window step by step (now-1h -> now-6h -> now-24h) keeping a filter
               (objNameLike/service/login/ip) — windows over 5 minutes require one.
             - Prefer narrow windows and server-side filters to avoid the scan cap. Watch
@@ -195,7 +198,7 @@ public final class McpMain {
                 .build();
 
         McpSchema.Tool listCounters = readOnlyTool(jsonMapper, "list_counters",
-                "List available counter metadata (name/displayName/unit) for a given objType.",
+                "List available counter metadata (name/displayName/unit). Pass objType if known, or objNameLike (fuzzy app-name fragment) to derive it.",
                 Schemas.LIST_COUNTERS);
 
         McpServerFeatures.SyncToolSpecification listCountersSpec = McpServerFeatures.SyncToolSpecification.builder()
@@ -204,6 +207,25 @@ public final class McpMain {
                     try {
                         Map<String, Object> arguments = request.arguments();
                         String objType = asString(arguments, "objType");
+                        String objNameLike = asString(arguments, "objNameLike");
+                        if (objType == null && objNameLike == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "one of objType/objNameLike is required");
+                        }
+                        if (objType == null) {
+                            // Derive the objType from the first fuzzy-matched object (users rarely know objType).
+                            var all = client.listObjects();
+                            var matched = scouter.mcp.scouter.TargetResolver.match(all, objNameLike);
+                            if (matched.isEmpty()) {
+                                throw scouter.mcp.error.McpError.of(
+                                                scouter.mcp.error.McpError.Code.NOT_FOUND,
+                                                Messages.get(config.locale(), "error.target_not_found", objNameLike.trim()))
+                                        .withHint("candidates",
+                                                String.join(", ", scouter.mcp.scouter.TargetResolver.suggest(all, 10)));
+                            }
+                            objType = matched.get(0).objType();
+                        }
                         String json = Tools.renderListCounters(config.locale(), client, objType);
                         return McpSchema.CallToolResult.builder()
                                 .addTextContent(json)
