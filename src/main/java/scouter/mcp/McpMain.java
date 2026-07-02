@@ -520,12 +520,44 @@ public final class McpMain {
                 })
                 .build();
 
+        McpSchema.Tool getObjectEnv = readOnlyTool(jsonMapper, "get_object_env",
+                "Read an agent JVM's system properties (java version, -D flags, timezone, paths) for configuration diagnosis. Values of secret-looking keys (password/token/...) are masked server-side. Use keyLike to filter (the full set is large). One of objNameLike/objHash required.",
+                Schemas.GET_OBJECT_ENV);
+
+        McpServerFeatures.SyncToolSpecification getObjectEnvSpec = McpServerFeatures.SyncToolSpecification.builder()
+                .tool(getObjectEnv)
+                .callHandler((exchange, request) -> {
+                    try {
+                        Map<String, Object> arguments = request.arguments();
+                        String objNameLike = asString(arguments, "objNameLike");
+                        Long objHash = asLong(arguments, "objHash");
+                        if (objNameLike == null && objHash == null) {
+                            throw scouter.mcp.error.McpError.of(
+                                    scouter.mcp.error.McpError.Code.INVALID_INPUT,
+                                    "one of objNameLike/objHash is required");
+                        }
+                        String keyLike = asString(arguments, "keyLike");
+                        String json = Tools.renderObjectEnv(config.locale(), client, objNameLike, objHash, keyLike);
+                        return McpSchema.CallToolResult.builder().addTextContent(json).build();
+                    } catch (scouter.mcp.error.McpError e) {
+                        return toolError(e);
+                    } catch (IllegalArgumentException e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INVALID_INPUT, e.getMessage()));
+                    } catch (Exception e) {
+                        return toolError(scouter.mcp.error.McpError.of(
+                                scouter.mcp.error.McpError.Code.INTERNAL, String.valueOf(e.getMessage())));
+                    }
+                })
+                .build();
+
         McpSyncServer server = McpServer.sync(transport)
                 .serverInfo("scouter-mcp", "0.1.0")
                 .capabilities(McpSchema.ServerCapabilities.builder().tools(true).prompts(true).build())
                 .tools(listObjectsSpec, getCounterSpec, listCountersSpec, searchXlogSpec,
                         getServiceSummarySpec, getXlogDetailSpec, getXlogByGxidSpec,
-                        listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec)
+                        listAlertsSpec, getActiveServicesSpec, listThreadsSpec, getThreadDetailSpec,
+                        getObjectEnvSpec)
                 .prompts(Map.of("diagnose_root_cause", diagnosePlaybook))
                 .build();
 

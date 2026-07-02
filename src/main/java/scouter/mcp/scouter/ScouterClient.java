@@ -4,6 +4,7 @@ import scouter.mcp.scouter.dto.ActiveServiceDto;
 import scouter.mcp.scouter.dto.AlertDto;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
+import scouter.mcp.scouter.dto.EnvDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
@@ -54,6 +55,9 @@ public interface ScouterClient extends AutoCloseable {
     // thread by txid; threadId is optional. includeBindParams=false clears SQLActiveBindVar.
     ThreadDetailDto getThreadDetail(String objNameLike, Long objHash, Long threadId, long txid,
                                     boolean includeBindParams);
+
+    // JVM system properties of one agent (OBJECT_ENV). Fuzzy targets resolve to the first alive instance.
+    EnvDto getObjectEnv(String objNameLike, Long objHash);
 
     @Override
     void close();

@@ -38,6 +38,7 @@ import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ServiceSummaryDto;
 import scouter.mcp.policy.Truncate;
+import scouter.mcp.scouter.dto.EnvDto;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
 import scouter.mcp.scouter.dto.ThreadListDto;
 import scouter.mcp.scouter.dto.ThreadRowDto;
@@ -1106,6 +1107,39 @@ public final class TcpScouterClient implements ScouterClient {
             if (isEof(e)) {
                 throw McpError.of(McpError.Code.NOT_FOUND,
                         Messages.get(config.locale(), "error.thread_detail_empty"));
+            }
+            throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
+    @Override
+    public EnvDto getObjectEnv(String objNameLike, Long objHash) {
+        return SessionRetry.execute(() -> getObjectEnvImpl(objNameLike, objHash), this::relogin);
+    }
+
+    private EnvDto getObjectEnvImpl(String objNameLike, Long objHash) {
+        // OBJECT_ENV: {objHash} -> single MapPack with the whole System.getProperties() flattened (no fixed keys).
+        SObjectDto target = resolveAliveTargets(objNameLike, objHash, 1).get(0);
+        MapPack param = new MapPack();
+        param.put(ParamConstant.OBJ_HASH, target.objHash());
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            Pack p = tcp.getSingle(RequestCmd.OBJECT_ENV, param);
+            Map<String, String> props = new java.util.TreeMap<>();
+            if (p instanceof MapPack mp) {
+                java.util.Iterator<String> it = mp.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    props.put(k, mp.getText(k));
+                }
+            }
+            return new EnvDto(target.objHash(), target.objName(), props);
+        } catch (Exception e) {
+            if (isEof(e)) {
+                // Agent did not answer (down / foreign type): surface as an empty property set.
+                return new EnvDto(target.objHash(), target.objName(), Map.of());
             }
             throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
         } finally {

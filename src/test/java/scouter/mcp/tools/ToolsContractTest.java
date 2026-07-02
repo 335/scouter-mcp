@@ -187,6 +187,27 @@ class ToolsContractTest {
     }
 
     @Test
+    void objectEnvMasksSecretsAndFiltersKeys() {
+        ScouterClient client = mock(ScouterClient.class);
+        java.util.Map<String, String> props = new java.util.LinkedHashMap<>();
+        props.put("java.version", "17.0.9");
+        props.put("db.password", "supersecret");
+        props.put("api.token", "abc123secret");
+        props.put("java.class.path", "x".repeat(2000));
+        when(client.getObjectEnv(eq("app"), isNull()))
+                .thenReturn(new scouter.mcp.scouter.dto.EnvDto(1, "/pod/app1", props));
+
+        String json = Tools.renderObjectEnv(Locale.ENGLISH, client, "app", null, null);
+        assertThat(json).contains("17.0.9");
+        assertThat(json).doesNotContain("supersecret").doesNotContain("abc123secret");
+        assertThat(json).contains("***");
+        assertThat(json).contains("truncated"); // class.path cut to ENV_VALUE_MAX_CHARS
+
+        String filtered = Tools.renderObjectEnv(Locale.ENGLISH, client, "app", null, "version");
+        assertThat(filtered).contains("java.version").doesNotContain("class.path");
+    }
+
+    @Test
     void searchXlogWarnsWhenClientSideFilterDiscardsAlmostEverything() {
         // minElapsedMs/onlyError drop rows only AFTER the collector streamed them; when nearly all
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.

@@ -10,6 +10,7 @@ import scouter.mcp.scouter.dto.ActiveServiceDto;
 import scouter.mcp.scouter.dto.AlertDto;
 import scouter.mcp.scouter.dto.CounterMetaDto;
 import scouter.mcp.scouter.dto.CounterSeriesDto;
+import scouter.mcp.scouter.dto.EnvDto;
 import scouter.mcp.scouter.dto.SObjectDto;
 import scouter.mcp.scouter.dto.SearchXlogParams;
 import scouter.mcp.scouter.dto.ThreadDetailDto;
@@ -302,6 +303,39 @@ public final class Tools {
                 || (d.threadName() != null && d.threadName().startsWith("[No Thread]"))) {
             // The txid finished between the listing call and this drill-down: it is a live snapshot only.
             result.put("hint", Messages.get(locale, "hint.thread_detail_stale"));
+        }
+        try {
+            return MAPPER.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // Env values routinely carry credentials (-Ddb.password=...). Masking is unconditional server-side
+    // policy, mirroring the bind-param kill-switch philosophy: the LLM cannot opt back in.
+    private static final java.util.regex.Pattern SECRET_KEY =
+            java.util.regex.Pattern.compile("(?i).*(password|passwd|secret|token|credential|private).*");
+
+    public static String renderObjectEnv(Locale locale, ScouterClient client, String objNameLike,
+                                         Long objHash, String keyLike) {
+        EnvDto env = client.getObjectEnv(objNameLike, objHash);
+        String needle = keyLike == null ? null : keyLike.toLowerCase();
+        Map<String, String> rendered = new LinkedHashMap<>();
+        env.properties().forEach((k, v) -> {
+            if (needle != null && !k.toLowerCase().contains(needle)) {
+                return;
+            }
+            rendered.put(k, SECRET_KEY.matcher(k).matches() ? "***"
+                    : scouter.mcp.policy.Truncate.text(v, Limits.ENV_VALUE_MAX_CHARS));
+        });
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("objHash", env.objHash());
+        result.put("objName", env.objName());
+        result.put("count", rendered.size());
+        result.put("properties", rendered);
+        result.put("note", Messages.get(locale, "note.env_masked"));
+        if (rendered.isEmpty()) {
+            result.put("hint", Messages.get(locale, "hint.env_empty"));
         }
         try {
             return MAPPER.writeValueAsString(result);

@@ -132,6 +132,17 @@ public final class Schemas {
         }
         """;
 
+    public static final String GET_OBJECT_ENV = """
+        {
+          "type": "object",
+          "properties": {
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment. Resolved to the first alive matching instance. One of objNameLike/objHash is required."},
+            "objHash": {"type": "integer", "description": "Target object hash (advanced; prefer objNameLike)"},
+            "keyLike": {"type": "string", "description": "Filter: case-insensitive substring on property keys (e.g. 'mem', 'timezone', 'version'). Recommended - the full property set is large."}
+          }
+        }
+        """;
+
     public static final String GET_XLOG_DETAIL = """
         {
           "type": "object",
