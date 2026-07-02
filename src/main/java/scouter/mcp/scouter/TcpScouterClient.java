@@ -211,6 +211,18 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
+    /**
+     * True when a RuntimeException from tcp.process() represents a normal, non-error stream end:
+     * either our own StopStreaming sentinel (limit/scan-cap reached) or an EOFException (the
+     * collector had no — or no more — data for this request). Both must be swallowed, not surfaced
+     * as INTERNAL errors. Centralized because scanning fans out per objHash/day segment when a
+     * fuzzy objNameLike target resolves to several instances, and any per-pass EOF is routine.
+     */
+    private static boolean isNormalStreamStop(RuntimeException e) {
+        Throwable cause = e.getCause() != null ? e.getCause() : e;
+        return cause instanceof StopStreaming || e instanceof StopStreaming || isEof(e);
+    }
+
     @Override
     public XlogSearchResult searchXlog(SearchXlogParams params) {
         return SessionRetry.execute(() -> searchXlogImpl(params), this::relogin);
@@ -390,10 +402,10 @@ public final class TcpScouterClient implements ScouterClient {
                             }
                         });
                     } catch (RuntimeException e) {
-                        Throwable cause = e.getCause() != null ? e.getCause() : e;
-                        if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+                        if (!isNormalStreamStop(e)) {
                             throw e;
                         }
+                        // Normal stop (StopStreaming or EOF): keep scanning remaining instances/segments.
                     } finally {
                         TcpProxy.close(tcp);
                     }
@@ -498,15 +510,15 @@ public final class TcpScouterClient implements ScouterClient {
                 }
             });
         } catch (RuntimeException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+            if (!isNormalStreamStop(e)) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
                 if (cause instanceof McpError) {
                     throw (McpError) cause;
                 }
                 throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
             }
-            // Intended early stop: process()'s internal catch already closed the socket, so the finally's
-            // TcpProxy.close sees isValid()=false and performs realClose, avoiding connection-pool poisoning.
+            // Intended early stop, or EOF: the collector has no (more) data for this objHash/day segment,
+            // which is routine when fanning out over several objNameLike-resolved instances — not an error.
         } finally {
             TcpProxy.close(tcp);
         }
@@ -608,13 +620,14 @@ public final class TcpScouterClient implements ScouterClient {
                     }
                 });
             } catch (RuntimeException e) {
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
-                if (!(cause instanceof StopStreaming) && !(e instanceof StopStreaming)) {
+                if (!isNormalStreamStop(e)) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
                     if (cause instanceof McpError) {
                         throw (McpError) cause;
                     }
                     throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
                 }
+                // EOF: no data for this objHash/day segment — routine when fanning out over instances.
             } finally {
                 TcpProxy.close(tcp);
             }
