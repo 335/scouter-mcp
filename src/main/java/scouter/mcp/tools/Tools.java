@@ -40,8 +40,31 @@ public final class Tools {
                 .filter(o -> objType == null || objType.equalsIgnoreCase(o.objType()))
                 .filter(o -> needle == null || (o.objName() != null && o.objName().toLowerCase().contains(needle)))
                 .collect(Collectors.toList());
+
+        // Group by objType (largest first, alive pods first within a group): a flat 50+ object dump
+        // makes the model relay a flat list to the user, while grouped output begets a grouped answer.
+        Map<String, List<SObjectDto>> byType = new LinkedHashMap<>();
+        for (SObjectDto o : objects) {
+            byType.computeIfAbsent(String.valueOf(o.objType()), k -> new ArrayList<>()).add(o);
+        }
+        List<Map<String, Object>> types = new ArrayList<>(byType.size());
+        byType.forEach((type, list) -> {
+            list.sort((a, b) -> Boolean.compare(b.alive(), a.alive()));
+            long alive = list.stream().filter(SObjectDto::alive).count();
+            Map<String, Object> group = new LinkedHashMap<>();
+            group.put("objType", type);
+            group.put("total", list.size());
+            group.put("alive", (int) alive);
+            group.put("objects", list);
+            types.add(group);
+        });
+        types.sort((a, b) -> Integer.compare((int) b.get("total"), (int) a.get("total")));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count", objects.size());
+        result.put("types", types);
         try {
-            return MAPPER.writeValueAsString(Map.of("count", objects.size(), "objects", objects));
+            return MAPPER.writeValueAsString(result);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

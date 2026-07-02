@@ -37,6 +37,23 @@ class ToolsContractTest {
     }
 
     @Test
+    void listObjectsGroupsByObjTypeWithAliveCounts() {
+        // A flat 50+ object dump makes the model relay a flat list; grouped output begets a grouped answer.
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.listObjects()).thenReturn(List.of(
+                new SObjectDto(1, "/podA/app-a1", "app-a", "10.0.0.1", true),
+                new SObjectDto(2, "/podB/app-a1", "app-a", "10.0.0.2", false),
+                new SObjectDto(3, "/podC/app-b1", "app-b", "10.0.0.3", true)));
+
+        String json = Tools.renderListObjects(client, null, null);
+
+        assertThat(json).contains("\"types\"");
+        assertThat(json).contains("\"objType\":\"app-a\"");
+        assertThat(json).contains("\"total\":2").contains("\"alive\":1"); // app-a: 2 pods, 1 alive
+        assertThat(json).contains("\"count\":3");
+    }
+
+    @Test
     void getCounterToolRendersSeriesWithPoints() {
         ScouterClient client = mock(ScouterClient.class);
         CounterSeriesDto series = new CounterSeriesDto(101, "Cpu", List.of(

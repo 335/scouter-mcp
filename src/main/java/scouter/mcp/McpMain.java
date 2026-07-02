@@ -72,6 +72,10 @@ public final class McpMain {
               truncated/scanCapReached/hint in results and narrow instead of refetching.
             - This MCP only reads monitoring data from the Scouter collector. The monitored applications
               (their source code) live in their own repositories, not here.
+            - Presentation: when relaying results to the user, group them by the dimension that matches
+              the question — objType or app for object lists, service for transactions, level for alerts —
+              with per-group counts, instead of one long flat list. Pick the grouping from context; a flat
+              dump of 50 rows is never the answer.
             """;
 
     private static McpSchema.Tool readOnlyTool(McpJsonMapper jm, String name, String description, String schema) {
@@ -105,7 +109,7 @@ public final class McpMain {
         StdioServerTransportProvider transport = new StdioServerTransportProvider(jsonMapper);
 
         McpSchema.Tool listObjects = readOnlyTool(jsonMapper, "list_objects",
-                "List Scouter monitored objects (agents). Filter by objType/nameLike.",
+                "List Scouter monitored objects (agents), grouped by objType with total/alive counts per group. Filter by objType/nameLike. When relaying to the user, keep the grouped shape (summarize per group) instead of flattening into one long list.",
                 Schemas.LIST_OBJECTS);
 
         McpServerFeatures.SyncToolSpecification listObjectsSpec = McpServerFeatures.SyncToolSpecification.builder()
