@@ -69,12 +69,17 @@
   "tools": [
     { "name": "list_objects", "description": "List Scouter monitored objects (agents)." },
     { "name": "get_counter", "description": "Query counter time series over a past range." },
+    { "name": "get_counter_stat", "description": "Long-range counter stats at fixed 5-minute resolution (up to 31 days)." },
     { "name": "list_counters", "description": "List available counter metadata for an objType." },
     { "name": "search_xlog", "description": "Search XLogs (transactions). Filter by service/objHash/login/ip/desc." },
     { "name": "get_service_summary", "description": "Per-service aggregate stats (count/avg/max/p95/errorRate)." },
+    { "name": "get_summary", "description": "Daily pre-aggregated stats (service/sql/apiCall/ip/userAgent/error/alert), no XLog scanning." },
     { "name": "get_xlog_detail", "description": "Get a single XLog detail (profile steps/SQL/errors)." },
     { "name": "get_xlog_by_gxid", "description": "List XLogs belonging to the same gxid." },
     { "name": "list_alerts", "description": "List past collector alerts over a window." },
-    { "name": "get_active_services", "description": "List services currently running on an agent." }
+    { "name": "get_active_services", "description": "List services currently running on an agent." },
+    { "name": "list_threads", "description": "List JVM threads for an agent, with state histogram and top CPU rows." },
+    { "name": "get_thread_detail", "description": "Live thread detail for an active transaction (stack trace, lock owner, current SQL)." },
+    { "name": "get_object_env", "description": "Read an agent's JVM system properties (secrets masked)." }
   ]
 }
