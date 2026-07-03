@@ -57,6 +57,31 @@ public final class TargetResolver {
         return found;
     }
 
+    /**
+     * Merges the real-time object list with historical (daily object DB) lists, deduped by objHash.
+     * Real-time entries win on conflict: they carry live alive/address values, while daily entries
+     * only exist to keep deploy-replaced pods resolvable for past windows.
+     */
+    public static List<SObjectDto> unionByHash(List<SObjectDto> realtime, List<SObjectDto> historical) {
+        List<SObjectDto> out = new ArrayList<>();
+        Set<Integer> seen = new java.util.HashSet<>();
+        if (realtime != null) {
+            for (SObjectDto o : realtime) {
+                if (seen.add(o.objHash())) {
+                    out.add(o);
+                }
+            }
+        }
+        if (historical != null) {
+            for (SObjectDto o : historical) {
+                if (seen.add(o.objHash())) {
+                    out.add(o);
+                }
+            }
+        }
+        return out;
+    }
+
     /** Distinct objNames (bounded) for a "did you mean" hint when nothing matched. */
     public static List<String> suggest(List<SObjectDto> objects, int max) {
         Set<String> names = new LinkedHashSet<>();

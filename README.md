@@ -102,8 +102,10 @@ Users say app-name fragments ("shop-order-api"), but real objNames embed the k8s
 (`/shop-order-api-deployment-5f4b8c7d9-abcde/shop-order-api1`), so objHash changes on every deploy
 and an app spans multiple instances. `objNameLike` solves this: a case-insensitive fragment is
 resolved to **all** matching instances (alive first, capped at 20) and queried across them — no
-objHash needed, ever. If nothing matches, the error is `NOT_FOUND` with a `candidates` hint listing
-actual objNames so the caller can self-correct in one step.
+objHash needed, ever. For XLog search/summary the resolution also unions the collector's daily
+object DB, so pods replaced by a deploy during the queried window are still found. If nothing
+matches, the error is `NOT_FOUND` with a `candidates` hint listing actual objNames so the caller
+can self-correct in one step.
 
 ### Sloppy service queries
 

@@ -55,4 +55,52 @@ class TargetResolverTest {
         assertThat(s).hasSizeLessThanOrEqualTo(3);
         assertThat(s).allMatch(n -> n.startsWith("/"));
     }
+
+    // unionByHash: merges the real-time object list with historical (daily DB) lists so that pods
+    // replaced by a deploy — absent from OBJECT_LIST_REAL_TIME — remain resolvable for past windows.
+
+    @Test
+    void unionAppendsHistoricalOnlyEntries() {
+        List<SObjectDto> realtime = List.of(
+                new SObjectDto(11, "/shop-order-api-deployment-new-aaa/shop-order-api1", "tomcat", "10.0.0.1", true));
+        List<SObjectDto> daily = List.of(
+                new SObjectDto(99, "/shop-order-api-deployment-old-zzz/shop-order-api1", "tomcat", "", false));
+        List<SObjectDto> got = TargetResolver.unionByHash(realtime, daily);
+        assertThat(got).extracting(SObjectDto::objHash).containsExactly(11, 99);
+    }
+
+    @Test
+    void unionPrefersRealtimeEntryOnDuplicateHash() {
+        List<SObjectDto> realtime = List.of(
+                new SObjectDto(11, "/shop-order-api-deployment-aaa/shop-order-api1", "tomcat", "10.0.0.1", true));
+        List<SObjectDto> daily = List.of(
+                new SObjectDto(11, "/shop-order-api-deployment-aaa/shop-order-api1", "tomcat", "", false));
+        List<SObjectDto> got = TargetResolver.unionByHash(realtime, daily);
+        assertThat(got).hasSize(1);
+        assertThat(got.get(0).alive()).isTrue();
+        assertThat(got.get(0).address()).isEqualTo("10.0.0.1");
+    }
+
+    @Test
+    void unionToleratesNullAndEmptyInputs() {
+        List<SObjectDto> only = List.of(
+                new SObjectDto(11, "/a/app1", "tomcat", "10.0.0.1", true));
+        assertThat(TargetResolver.unionByHash(only, null)).containsExactlyElementsOf(only);
+        assertThat(TargetResolver.unionByHash(null, only)).containsExactlyElementsOf(only);
+        assertThat(TargetResolver.unionByHash(null, null)).isEmpty();
+        assertThat(TargetResolver.unionByHash(only, List.of())).containsExactlyElementsOf(only);
+    }
+
+    @Test
+    void matchOverUnionFindsReplacedPodAndOrdersAliveFirst() {
+        List<SObjectDto> realtime = List.of(
+                new SObjectDto(11, "/shop-order-api-deployment-new-aaa/shop-order-api1", "tomcat", "10.0.0.1", true));
+        List<SObjectDto> daily = List.of(
+                new SObjectDto(99, "/shop-order-api-deployment-old-zzz/shop-order-api1", "tomcat", "", false),
+                new SObjectDto(11, "/shop-order-api-deployment-new-aaa/shop-order-api1", "tomcat", "", false));
+        List<SObjectDto> got = TargetResolver.match(TargetResolver.unionByHash(realtime, daily), "shop-order-api");
+        assertThat(got).extracting(SObjectDto::objHash).containsExactly(11, 99);
+        assertThat(got.get(0).alive()).isTrue();
+        assertThat(got.get(1).alive()).isFalse();
+    }
 }

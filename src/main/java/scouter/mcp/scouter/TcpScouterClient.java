@@ -129,6 +129,44 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
+    /**
+     * Object list persisted in the collector's daily DB (OBJECT_LIST_LOAD_DATE): includes instances
+     * that stopped reporting since — deploy-replaced pods above all. The daily DB stores identity
+     * only, so alive is false and address empty. Failures degrade to an empty list: this is a
+     * best-effort widening of the real-time list, never a reason to fail the query itself.
+     */
+    private List<SObjectDto> listObjectsByDateImpl(String yyyymmdd) {
+        TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        try {
+            MapPack param = new MapPack();
+            param.put(ParamConstant.DATE, yyyymmdd);
+            Pack p = tcp.getSingle(RequestCmd.OBJECT_LIST_LOAD_DATE, param);
+            List<SObjectDto> out = new ArrayList<>();
+            if (!(p instanceof MapPack)) {
+                return out;
+            }
+            MapPack mp = (MapPack) p;
+            ListValue hashLv = mp.getList(ParamConstant.OBJ_HASH);
+            ListValue nameLv = mp.getList("objName"); // ObjectRD.getDailyAgent key; no ParamConstant exists
+            ListValue typeLv = mp.getList(ParamConstant.OBJ_TYPE);
+            if (hashLv == null) {
+                return out;
+            }
+            for (int i = 0; i < hashLv.size(); i++) {
+                String name = nameLv == null ? null : nameLv.getString(i);
+                String type = typeLv == null ? null : typeLv.getString(i);
+                out.add(new SObjectDto((int) hashLv.getLong(i), name, type, "", false));
+            }
+            return out;
+        } catch (RuntimeException e) {
+            log.debug("daily object list unavailable, realtime-only resolution: date={}, cause={}",
+                    yyyymmdd, String.valueOf(e.getMessage()));
+            return new ArrayList<>();
+        } finally {
+            TcpProxy.close(tcp);
+        }
+    }
+
     @Override
     public List<CounterSeriesDto> getCounter(List<Integer> objHashes, String counter, long fromMillis, long toMillis) {
         return SessionRetry.execute(() -> getCounterImpl(objHashes, counter, fromMillis, toMillis), this::relogin);
@@ -342,10 +380,13 @@ public final class TcpScouterClient implements ScouterClient {
      * Turn the caller's object constraint into the concrete objHash list to query.
      * Explicit objHash wins; otherwise objNameLike is fuzzy-resolved to every matching instance
      * (alive first, capped at SEARCH_MAX_OBJ); no constraint yields [null] (single unfiltered pass).
+     * Resolution matches against the union of the real-time object list and the collector's daily
+     * object DB for each queried date: OBJECT_LIST_REAL_TIME drops deploy-replaced pods, so without
+     * the daily union their already-stored XLogs would be unreachable by name for past windows.
      * An unresolvable objNameLike fails fast as NOT_FOUND with candidate names, so the caller can
      * self-correct in one step instead of scanning nothing.
      */
-    private List<Long> resolveTargetHashes(Long objHash, String objNameLike) {
+    private List<Long> resolveTargetHashes(Long objHash, String objNameLike, List<DaySplitter.Segment> segments) {
         if (objHash != null && objHash != 0L) {
             List<Long> one = new ArrayList<>();
             one.add(objHash);
@@ -357,6 +398,13 @@ public final class TcpScouterClient implements ScouterClient {
             return none;
         }
         List<SObjectDto> all = listObjectsImpl();
+        Set<String> dates = new LinkedHashSet<>();
+        for (DaySplitter.Segment seg : segments) {
+            dates.add(scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
+        }
+        for (String ymd : dates) {
+            all = TargetResolver.unionByHash(all, listObjectsByDateImpl(ymd));
+        }
         List<SObjectDto> matched = TargetResolver.match(all, objNameLike);
         if (matched.isEmpty()) {
             throw McpError.of(McpError.Code.NOT_FOUND,
@@ -383,7 +431,9 @@ public final class TcpScouterClient implements ScouterClient {
         validateSearchWindow(params);
 
         String servicePattern = buildServicePattern(params.service());
-        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike());
+        List<DaySplitter.Segment> segments =
+                DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone());
+        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike(), segments);
 
         final int limit = params.limit() <= 0
                 ? Limits.SEARCH_DEFAULT_LIMIT
@@ -396,8 +446,6 @@ public final class TcpScouterClient implements ScouterClient {
         final int[] examined = {0};
         final boolean[] stoppedByLimit = {false};
 
-        List<DaySplitter.Segment> segments =
-                DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone());
         ensurePassBudget(targetHashes.size() * segments.size(), config.locale());
         long startedAt = System.currentTimeMillis();
 
@@ -645,7 +693,9 @@ public final class TcpScouterClient implements ScouterClient {
         // keeping the response to a few dozen lines. Scan cap is higher since no rows are held.
         validateSearchWindow(params);
         String servicePattern = buildServicePattern(params.service());
-        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike());
+        List<DaySplitter.Segment> segments =
+                DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone());
+        List<Long> targetHashes = resolveTargetHashes(params.objHash(), params.objNameLike(), segments);
         Integer minElapsed = params.minElapsedMs();
         boolean onlyError = params.onlyError();
 
@@ -657,7 +707,7 @@ public final class TcpScouterClient implements ScouterClient {
         }
         List<Pass> passes = new ArrayList<>();
         for (Long hash : targetHashes) {
-            for (DaySplitter.Segment seg : DaySplitter.splitByCalendarDay(params.fromMillis(), params.toMillis(), config.zone())) {
+            for (DaySplitter.Segment seg : segments) {
                 passes.add(new Pass(hash, seg));
             }
         }
@@ -769,7 +819,6 @@ public final class TcpScouterClient implements ScouterClient {
      * instead of performing per-row GET_TEXT_PACK round-trips (matters for large result sets).
      */
     private List<XLogRowDto> mapRows(List<XLogPack> packs) {
-        TextDictionary dict = new TextDictionary(server, buildObjNameMap());
         Map<Long, Set<Integer>> serviceByYmd = new HashMap<>();
         Map<Long, Set<Integer>> errorByYmd = new HashMap<>();
         for (XLogPack xp : packs) {
@@ -779,6 +828,7 @@ public final class TcpScouterClient implements ScouterClient {
                 errorByYmd.computeIfAbsent(ymd, k -> new LinkedHashSet<>()).add(xp.error);
             }
         }
+        TextDictionary dict = new TextDictionary(server, objNameMapFor(packs, serviceByYmd.keySet()));
         serviceByYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.SERVICE, ymd, hashes));
         errorByYmd.forEach((ymd, hashes) -> dict.prefetch(TextTypes.ERROR, ymd, hashes));
 
@@ -1488,6 +1538,32 @@ public final class TcpScouterClient implements ScouterClient {
     private volatile long objNameCacheAt;
     // Counter definitions are effectively static at runtime; cache the engine for the session.
     private volatile CounterEngine counterEngineCache;
+
+    /**
+     * objName map for the rows being rendered. Starts from the cached real-time map; when a row's
+     * objHash is missing there (a deploy-replaced pod), widens it with the daily object DB for the
+     * days the rows span — otherwise dead instances would render as opaque "#hash" names.
+     */
+    private Map<Integer, String> objNameMapFor(List<XLogPack> packs, Set<Long> ymds) {
+        Map<Integer, String> base = buildObjNameMap();
+        boolean allKnown = true;
+        for (XLogPack xp : packs) {
+            if (!base.containsKey(xp.objHash)) {
+                allKnown = false;
+                break;
+            }
+        }
+        if (allKnown) {
+            return base;
+        }
+        Map<Integer, String> widened = new HashMap<>(base);
+        for (Long ymd : ymds) {
+            for (SObjectDto o : listObjectsByDateImpl(String.valueOf(ymd))) {
+                widened.putIfAbsent(o.objHash(), o.objName());
+            }
+        }
+        return widened;
+    }
 
     private Map<Integer, String> buildObjNameMap() {
         Map<Integer, String> cached = objNameCache;

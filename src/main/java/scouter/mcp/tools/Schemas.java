@@ -65,7 +65,7 @@ public final class Schemas {
           "properties": {
             "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00). Start narrow (now-1h) and widen stepwise (now-6h -> now-24h) only when results are empty"},
             "to": {"type": "string", "description": "End time (e.g. now)"},
-            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment as the user says it (e.g. 'shop-order-api'). Case-insensitive; resolved to ALL matching instances (k8s pods, alive first, max 20) and queried across them. PREFER THIS over objHash — objHash embeds the pod name and changes every deploy. If nothing matches, the error lists candidate names."},
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment as the user says it (e.g. 'shop-order-api'). Case-insensitive; resolved to ALL matching instances (k8s pods, alive first, max 20) and queried across them — including pods replaced by a deploy during the queried window (daily object DB). PREFER THIS over objHash — objHash embeds the pod name and changes every deploy. If nothing matches, the error lists candidate names."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike). Only use a value obtained from list_objects in this session."},
             "service": {"type": "string", "description": "Filter: service (request URL) name. Sloppy input is fine — 'orderDetail', 'GET /api/order/order-detail', 'order-detail POST', or a pasted 'name<POST>' are all normalized (HTTP method extracted, longest token used server-side). Matching is case-sensitive substring; if nothing matches, the result returns serviceCandidates with real service names from the same window — retry with one of those. Advanced: '*' patterns are used as-is."},
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch). Effective for tracing a specific user's requests; also relaxes the 5-minute unfiltered-window limit."},
@@ -111,7 +111,7 @@ public final class Schemas {
           "properties": {
             "from": {"type": "string", "description": "Start time (e.g. now-1h, 2026-06-29T10:00). Start narrow (now-1h) and widen stepwise only when results are empty"},
             "to": {"type": "string", "description": "End time (e.g. now)"},
-            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (e.g. 'shop-order-api'). Case-insensitive; aggregates over ALL matching instances. PREFER THIS over objHash."},
+            "objNameLike": {"type": "string", "description": "Fuzzy target: app-name fragment (e.g. 'shop-order-api'). Case-insensitive; aggregates over ALL matching instances, including pods replaced by a deploy during the queried window. PREFER THIS over objHash."},
             "objHash": {"type": "integer", "description": "Filter: a specific object hash (advanced; prefer objNameLike)"},
             "service": {"type": "string", "description": "Filter: service (request URL) name. Sloppy input is normalized like search_xlog; on zero matches, serviceCandidates lists real names"},
             "login": {"type": "string", "description": "Filter: login user (server-side StrMatch)"},
