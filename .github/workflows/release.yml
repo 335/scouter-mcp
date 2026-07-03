@@ -7,10 +7,18 @@ name: Release
 #  4) publishes an mcpb package to the official MCP registry (registry.modelcontextprotocol.io).
 # Runtime requirement: Java 17+ on the user's host (the mcpb bundle runs the jar with the host java).
 # Example: git tag v0.2.0 && git push origin v0.2.0
+#
+# workflow_dispatch is a manual-recovery path: GitHub's GITHUB_TOKEN deliberately does not trigger
+# other workflows, so a tag pushed by tag-on-merge.yml's default token (before it was switched to a
+# PAT) never fires this. To re-run for an existing tag: Actions > Release > Run workflow > pick the
+# tag from the "Use workflow from" dropdown (this makes GITHUB_REF_NAME resolve to the tag, exactly
+# like a push event, so no separate input is needed).
+
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write   # create the release and upload assets
