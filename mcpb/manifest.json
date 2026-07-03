@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "scouter-mcp",
   "display_name": "Scouter MCP",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Query Scouter APM (objects, counters, XLog transactions) over stdio via a Scouter collector.",
   "author": {
     "name": "335",
