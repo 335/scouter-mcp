@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "scouter-mcp",
   "display_name": "Scouter MCP",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Query Scouter APM (objects, counters, XLog transactions) over stdio via a Scouter collector. Requires Java 17+ on the host (uses the host `java`).",
   "author": {
     "name": "335",

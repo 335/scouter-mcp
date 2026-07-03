@@ -5,8 +5,8 @@ plugins {
 }
 
 group = "scouter.mcp"
-// Overridden by CI (tag release) via -PappVersion=<tag>; local default is 0.2.0.
-version = (findProperty("appVersion") as String?) ?: "0.2.0"
+// Overridden by CI (tag release) via -PappVersion=<tag>; local default is 0.3.0.
+version = (findProperty("appVersion") as String?) ?: "0.3.0"
 
 java {
     toolchain {
