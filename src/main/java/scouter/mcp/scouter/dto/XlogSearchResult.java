@@ -11,7 +11,9 @@ import java.util.List;
  * the caller almost certainly confused an app name with a service URL and should use objNameLike.
  * serviceCandidates: rows are empty AND real service names similar to the query were discovered in
  * the same window (case-insensitive token match) — retry with one of these exact names.
+ * timedOut: the fan-out deadline (Limits.FANOUT_DEADLINE_MS) expired before every instance/day pass
+ * finished, so rows are partial — narrow the target/window for complete coverage.
  */
 public record XlogSearchResult(List<XLogRowDto> rows, boolean truncated, boolean scanCapReached, int examined,
-                               boolean serviceLooksLikeApp, List<String> serviceCandidates) {
+                               boolean serviceLooksLikeApp, List<String> serviceCandidates, boolean timedOut) {
 }

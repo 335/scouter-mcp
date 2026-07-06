@@ -169,6 +169,9 @@ public final class Tools {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("count", rows.size());
         result.put("truncated", res.truncated());
+        if (res.timedOut()) {
+            result.put("timedOut", true);
+        }
         result.put("rows", rows);
         // Client-side filters (minElapsedMs/onlyError) drop rows only after the collector streamed them.
         // A sub-1% keep rate over a big scan means the query shape itself is wasteful — say so explicitly
@@ -176,7 +179,16 @@ public final class Tools {
         boolean clientFilter = params.minElapsedMs() != null || params.onlyError();
         boolean lowSelectivity = clientFilter && res.examined() >= 1000
                 && (long) rows.size() * 100 < res.examined();
-        if (lowSelectivity) {
+        long deadlineSec = scouter.mcp.policy.Limits.FANOUT_DEADLINE_MS / 1000;
+        boolean serviceFilter = params.service() != null && !params.service().isBlank();
+        if (res.timedOut()) {
+            // Fan-out deadline / read timeout: rows are partial. A service filter is the usual culprit
+            // (raw scan per instance) — steer to the cheap get_summary-first procedure; otherwise just
+            // narrow the target.
+            result.put("hint", serviceFilter
+                    ? Messages.get(locale, "hint.service_scan_slow", deadlineSec)
+                    : Messages.get(locale, "hint.search_deadline", deadlineSec));
+        } else if (lowSelectivity) {
             result.put("hint", Messages.get(locale, "hint.low_selectivity", rows.size(), res.examined()));
         } else if (res.scanCapReached()) {
             // Scan cap reached: results may be partial, so strongly steer toward narrowing the filter (saves tokens/resources).
@@ -190,6 +202,10 @@ public final class Tools {
             // Real service names similar to the sloppy query were discovered in the same window.
             result.put("serviceCandidates", res.serviceCandidates());
             result.put("hint", Messages.get(locale, "hint.search_service_candidates"));
+        } else if (rows.isEmpty() && serviceFilter) {
+            // A service filter matched nothing and no similar name surfaced: the string is probably not a
+            // real service. Validate/propose via get_summary or confirm with the user, don't widen blindly.
+            result.put("hint", Messages.get(locale, "hint.search_service_unknown"));
         } else if (rows.isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }
@@ -208,13 +224,22 @@ public final class Tools {
         result.put("scanCapReached", res.scanCapReached());
         result.put("examined", res.examined());
         result.put("services", res.services());
-        if (res.scanCapReached()) {
+        if (res.timedOut()) {
+            result.put("timedOut", true);
+            long deadlineSec = scouter.mcp.policy.Limits.FANOUT_DEADLINE_MS / 1000;
+            boolean serviceFilter = params.service() != null && !params.service().isBlank();
+            result.put("hint", serviceFilter
+                    ? Messages.get(locale, "hint.service_scan_slow", deadlineSec)
+                    : Messages.get(locale, "hint.summary_deadline", deadlineSec));
+        } else if (res.scanCapReached()) {
             result.put("hint", Messages.get(locale, "hint.summary_scan_cap", res.examined()));
         } else if (res.services().isEmpty() && res.serviceLooksLikeApp()) {
             result.put("hint", Messages.get(locale, "hint.search_service_is_app", params.service().trim()));
         } else if (res.services().isEmpty() && res.serviceCandidates() != null && !res.serviceCandidates().isEmpty()) {
             result.put("serviceCandidates", res.serviceCandidates());
             result.put("hint", Messages.get(locale, "hint.search_service_candidates"));
+        } else if (res.services().isEmpty() && params.service() != null && !params.service().isBlank()) {
+            result.put("hint", Messages.get(locale, "hint.search_service_unknown"));
         } else if (res.services().isEmpty()) {
             result.put("hint", Messages.get(locale, "hint.search_empty"));
         }
@@ -388,7 +413,10 @@ public final class Tools {
         boolean empty = (res.rows() == null || res.rows().isEmpty())
                 && (res.errorRows() == null || res.errorRows().isEmpty())
                 && (res.alertRows() == null || res.alertRows().isEmpty());
-        if (empty) {
+        if (res.timedOut()) {
+            result.put("timedOut", true);
+            result.put("hint", Messages.get(locale, "hint.summary_deadline", scouter.mcp.policy.Limits.FANOUT_DEADLINE_MS / 1000));
+        } else if (empty) {
             result.put("hint", Messages.get(locale, "hint.summary_empty"));
         }
         try {

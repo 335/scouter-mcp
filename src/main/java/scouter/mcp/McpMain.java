@@ -47,13 +47,23 @@ public final class McpMain {
                get_service_summary, get_counter, get_active_services all accept it and fan out over every
                matching instance). Do NOT ask the user for an objHash, and do not pre-call list_objects just
                to resolve one. If objNameLike matches nothing, the error returns candidate objNames — pick
-               the closest and retry.
+               the closest and retry. One app normally resolves to many pods (fine — they aggregate). BUT if
+               you are unsure of the exact app, or the fragment could match several DIFFERENT apps (e.g.
+               "grm-biz" -> grm-biz-member AND grm-biz-membership), confirm the intended app with the user
+               (or list_objects) before scanning — every extra instance is another slow per-instance scan.
             1. list_objects — only for discovery ("what is running?"); nameLike is case-insensitive.
             2. get_summary — FIRST for ranking/frequency questions ("which SQL/service/error is worst today"):
                daily pre-aggregated on the collector, no XLog scanning, up to 31 days. category=error rows
                carry a sample txid for step 5.
-            3. search_xlog — find specific slow or failing transactions. Filter by objNameLike + service
-               (substring), login, or ip. Rows carry txid/gxid/objName/endTimeIso.
+            3. search_xlog — find specific transactions (rows carry txid/gxid/objName/endTimeIso/elapsed/
+               sqlCount; filter by objNameLike + service/login/ip). Per-transaction fields like sqlCount are
+               ONLY here, not in any summary — so a "transactions with sqlCount>N / elapsed>N" request does
+               need search_xlog, filtered client-side on the returned rows. BUT if the user named the service
+               loosely (a bare token, not an exact URL<METHOD>), resolve the EXACT name via get_summary
+               category=service FIRST (step 2, no scan), then search with that exact name + a single objHash +
+               a narrow window. A loose service filter triggers a slow raw scan per instance; on PAST dates it
+               fans out over every rotated pod and often just times out — for past-date rare services, prefer
+               the get_summary aggregate and only drill into raw rows on a recent/narrow window.
             4. get_service_summary — per-service aggregate (count/avg/max/p95/errorRate) within a day-scale
                window; finer time bounds than get_summary's daily grain.
             5. get_xlog_detail(txid, at=endTimeIso) — inspect SQL/bind params/profile steps/errors for one
@@ -75,10 +85,27 @@ public final class McpMain {
             - Sloppy service input is normalized ("GET orderDetail", "order-detail POST", pasted "name<POST>").
               Server matching is case-sensitive though — if 0 rows come back with a serviceCandidates list,
               retry with one of those exact names instead of guessing again.
+            - Tracing one service by name (e.g. "checkOrdCnfCustEastnAddr")? A service filter scans raw XLogs
+              per instance and is slow on production, especially over wide or past windows. Do this instead:
+              (1) get_summary category=service to get the EXACT service name and per-instance counts with no
+              scan; (2) then search_xlog with that exact name plus a single objHash and a narrow window. For
+              failures, get_summary category=error already carries a sample txid for get_xlog_detail.
             - 0 rows? Widen the window step by step (now-1h -> now-6h -> now-24h) keeping a filter
               (objNameLike/service/login/ip) — windows over 5 minutes require one.
             - Prefer narrow windows and server-side filters to avoid the scan cap. Watch
               truncated/scanCapReached/hint in results and narrow instead of refetching.
+            - Whole-app aggregates over a wide or PAST-date window: use get_summary with objType (one
+              server-side aggregation across every instance — fast and complete). objNameLike fans out per
+              pod and, for past dates, over every rotated pod; it can time out. get_summary auto-uses the
+              objType pass when the app owns its type, but passing objType directly is the surest fast path.
+            - Repeated timeouts: do NOT keep retrying the same shape, and do NOT silently fall back to
+              another environment. Change the approach - switch to get_summary+objType for an aggregate, or a
+              single objHash + a short window for raw rows - and if it still times out, tell the user it is
+              timing out and ask them to confirm a narrower window or a specific instance rather than guessing.
+            - Past-date raw XLog retrieval of a rare service (individual rows / sqlCount / elapsed of specific
+              transactions) is often infeasible here: the per-instance scan is slow and objNameLike fans out
+              over every rotated pod. Get the aggregate from get_summary+objType; only drill into raw rows on
+              a recent or tightly-bounded window (ideally a single objHash).
             - minElapsedMs/onlyError are client-side: the collector streams rows before they drop. For
               "which is slow/erroring" questions prefer get_summary (sql/error) or get_service_summary.
             - Thread drill-down is a live snapshot: list_threads/get_active_services -> get_thread_detail
@@ -565,7 +592,7 @@ public final class McpMain {
                 .build();
 
         McpSchema.Tool getSummary = readOnlyTool(jsonMapper, "get_summary",
-                "Daily PRE-AGGREGATED stats from the collector (no XLog scanning, no scan cap - the cheapest wide-window tool). category=sql answers 'which SQL is slowest/hottest today'; error gives error-type x service counts with a sample txid for get_xlog_detail; service/apiCall/ip/userAgent/alert likewise. Top 50 by count. Prefer this over search_xlog for ranking/frequency questions; it is daily-partitioned data, so use day-scale from/to (up to 31 days).",
+                "Daily PRE-AGGREGATED stats from the collector (no XLog scanning, no scan cap - the cheapest wide-window tool). category=sql answers 'which SQL is slowest/hottest today'; error gives error-type x service counts with a sample txid for get_xlog_detail; service/apiCall/ip/userAgent/alert likewise. Top 50 by count. Prefer this over search_xlog for ranking/frequency questions; it is daily-partitioned data, so use day-scale from/to (up to 31 days). TARGETING: for a whole-app total prefer objType (the collector aggregates every instance in ONE server-side pass — fast and complete even for past dates); objNameLike also works and auto-uses the objType pass when the app owns its type, but on a shared type it fans out per pod and can be slow/partial. objHash targets one instance.",
                 Schemas.GET_SUMMARY);
 
         McpServerFeatures.SyncToolSpecification getSummarySpec = McpServerFeatures.SyncToolSpecification.builder()

@@ -60,6 +60,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 
 @Slf4j
 public final class TcpScouterClient implements ScouterClient {
@@ -427,7 +435,9 @@ public final class TcpScouterClient implements ScouterClient {
         // Ported from webapp XLogConsumer.searchXLogList: SEARCH_XLOG_LIST.
         // Policy (Limits): to defend against the production firehose, validate the window/filters and,
         // during streaming, cut the socket once the limit or scan cap is reached so that the collector
-        // scan/transfer and the MCP heap stop together.
+        // scan/transfer and the MCP heap stop together. The per-instance/day passes run with bounded
+        // concurrency under a wall-clock deadline (see fanout) so a fuzzy target (many pods) stays well
+        // under the MCP client timeout instead of adding up sequential round-trips.
         validateSearchWindow(params);
 
         String servicePattern = buildServicePattern(params.service());
@@ -439,44 +449,82 @@ public final class TcpScouterClient implements ScouterClient {
                 ? Limits.SEARCH_DEFAULT_LIMIT
                 : Math.min(params.limit(), Limits.SEARCH_MAX_LIMIT);
 
-        // Streaming state, accumulated across per-day segments and per-instance passes. The collector
-        // partitions XLogs by day (DaySplitter) and filters by a single objHash per pass, so a fuzzy
-        // target (k8s app -> many pods) fans out over instances; limit and scan cap stay global.
-        final List<XLogPack> kept = new ArrayList<>();
-        final int[] examined = {0};
-        final boolean[] stoppedByLimit = {false};
+        // Shared streaming state across concurrent passes. limit and scan cap stay global; each pass
+        // collects into its own list (thread-confined) so only these counters need to be atomic.
+        final List<Pass> passes = buildPasses(targetHashes, segments);
+        final Integer minElapsed = params.minElapsedMs();
+        final boolean onlyError = params.onlyError();
+        final AtomicInteger examined = new AtomicInteger();
+        final AtomicBoolean stoppedByLimit = new AtomicBoolean(false);
+        final AtomicBoolean partial = new AtomicBoolean(false);
 
-        ensurePassBudget(targetHashes.size() * segments.size(), config.locale());
+        ensurePassBudget(passes.size(), config.locale());
         long startedAt = System.currentTimeMillis();
 
-        outer:
-        for (Long hash : targetHashes) {
-            for (DaySplitter.Segment seg : segments) {
-                boolean stop = scanXlogSegment(seg, hash, servicePattern, params, limit, kept, examined, stoppedByLimit);
-                if (stop) {
-                    break outer;
+        Fanout<List<XLogPack>> fo = fanout(passes.size(), (tcp, idx) -> {
+            List<XLogPack> local = new ArrayList<>();
+            if (stoppedByLimit.get()) {
+                return local; // another pass already filled the global limit
+            }
+            Pass qp = passes.get(idx);
+            MapPack param = buildXlogParam(qp.seg(), qp.hash(), servicePattern, params);
+            try {
+                tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
+                    Pack p = in.readPack();
+                    int ex = examined.incrementAndGet();
+                    if (p instanceof XLogPack xp) {
+                        boolean keep = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
+                        if (keep && local.size() < limit) {
+                            local.add(xp);
+                        }
+                    }
+                    if (local.size() >= limit) {
+                        stoppedByLimit.set(true);
+                        throw new StopStreaming();
+                    }
+                    if (ex >= Limits.SEARCH_SCAN_CAP) {
+                        throw new StopStreaming();
+                    }
+                });
+            } catch (RuntimeException e) {
+                if (isNormalStreamStop(e)) {
+                    // Intended early stop, or EOF: routine per-pass, fan-out continues.
+                } else if (isReadTimeout(e)) {
+                    // This instance's server-side scan exceeded the read timeout; keep what it produced
+                    // and mark the overall result partial rather than failing the whole search.
+                    partial.set(true);
+                } else {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    if (cause instanceof McpError) {
+                        throw (McpError) cause;
+                    }
+                    throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
                 }
             }
-        }
+            return local;
+        });
 
-        boolean scanCapReached = examined[0] >= Limits.SEARCH_SCAN_CAP && !stoppedByLimit[0];
-        boolean truncated = stoppedByLimit[0] || scanCapReached;
+        boolean timedOut = fo.timedOut() || partial.get();
+        List<XLogPack> kept = mergeCapped(fo.results(), limit);
+        boolean limitReached = kept.size() >= limit;
+        boolean scanCapReached = examined.get() >= Limits.SEARCH_SCAN_CAP && !limitReached;
+        boolean truncated = limitReached || scanCapReached || timedOut;
 
         // Structured stderr telemetry: per-request fan-out/scan volume for post-hoc load analysis.
-        log.info("search_xlog done: passes={}, examined={}, kept={}, truncated={}, tookMs={}",
-                targetHashes.size() * segments.size(), examined[0], kept.size(), truncated,
+        log.info("search_xlog done: passes={}, examined={}, kept={}, truncated={}, timedOut={}, tookMs={}",
+                passes.size(), examined.get(), kept.size(), truncated, timedOut,
                 System.currentTimeMillis() - startedAt);
 
         boolean looksLikeApp = false;
         List<String> candidates = List.of();
-        if (kept.isEmpty() && params.service() != null && !params.service().isBlank()) {
+        if (kept.isEmpty() && !timedOut && params.service() != null && !params.service().isBlank()) {
             looksLikeApp = serviceFilterLooksLikeApp(params.service());
             if (!looksLikeApp) {
                 candidates = discoverServiceCandidates(params, targetHashes);
             }
         }
-        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined[0],
-                looksLikeApp, candidates);
+        return new XlogSearchResult(mapRows(kept), truncated, scanCapReached, examined.get(),
+                looksLikeApp, candidates, timedOut);
     }
 
     /**
@@ -589,17 +637,23 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
-    /**
-     * Scan a single per-day segment (SEARCH_XLOG_LIST) into the shared streaming state.
-     * Returns true when scanning should stop entirely (global limit or scan cap reached), so the
-     * caller skips remaining segments. Text-dictionary round-trips happen later (kept rows <= limit).
-     */
-    private boolean scanXlogSegment(DaySplitter.Segment seg, Long objHash, String servicePattern,
-                                    SearchXlogParams params, int limit,
-                                    List<XLogPack> kept, int[] examined, boolean[] stoppedByLimit) {
-        final Integer minElapsed = params.minElapsedMs();
-        final boolean onlyError = params.onlyError();
+    /** One collector round-trip target: a single objHash (null = unfiltered) over a single day segment. */
+    private record Pass(Long hash, DaySplitter.Segment seg) {
+    }
 
+    /** Cartesian product of target instances x day segments, the unit of fan-out for XLog streaming. */
+    private static List<Pass> buildPasses(List<Long> hashes, List<DaySplitter.Segment> segments) {
+        List<Pass> passes = new ArrayList<>(hashes.size() * segments.size());
+        for (Long hash : hashes) {
+            for (DaySplitter.Segment seg : segments) {
+                passes.add(new Pass(hash, seg));
+            }
+        }
+        return passes;
+    }
+
+    /** SEARCH_XLOG_LIST request params for one pass (shared by search/summary). */
+    private MapPack buildXlogParam(DaySplitter.Segment seg, Long objHash, String servicePattern, SearchXlogParams params) {
         MapPack param = new MapPack();
         param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
         param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
@@ -619,42 +673,98 @@ public final class TcpScouterClient implements ScouterClient {
         if (params.desc() != null && !params.desc().isBlank()) {
             param.put(ParamConstant.XLOG_DESC, params.desc().trim());
         }
+        return param;
+    }
 
-        TcpProxy tcp = TcpProxy.getTcpProxy(server);
-        try {
-            tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
-                Pack p = in.readPack();
-                examined[0]++;
-                if (p instanceof XLogPack) {
-                    XLogPack xp = (XLogPack) p;
-                    boolean pass = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
-                    if (pass && kept.size() < limit) {
-                        kept.add(xp);
-                    }
+    /** Concatenate per-pass results in pass order and cap the total, so the global limit is deterministic. */
+    static <T> List<T> mergeCapped(List<List<T>> parts, int cap) {
+        List<T> out = new ArrayList<>();
+        for (List<T> part : parts) {
+            for (T item : part) {
+                if (out.size() >= cap) {
+                    return out;
                 }
-                if (kept.size() >= limit) {
-                    stoppedByLimit[0] = true;
-                    throw new StopStreaming();
-                }
-                if (examined[0] >= Limits.SEARCH_SCAN_CAP) {
-                    throw new StopStreaming();
-                }
-            });
-        } catch (RuntimeException e) {
-            if (!isNormalStreamStop(e)) {
-                Throwable cause = e.getCause() != null ? e.getCause() : e;
-                if (cause instanceof McpError) {
-                    throw (McpError) cause;
-                }
-                throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
+                out.add(item);
             }
-            // Intended early stop, or EOF: the collector has no (more) data for this objHash/day segment,
-            // which is routine when fanning out over several objNameLike-resolved instances — not an error.
-        } finally {
-            TcpProxy.close(tcp);
         }
+        return out;
+    }
 
-        return stoppedByLimit[0] || examined[0] >= Limits.SEARCH_SCAN_CAP;
+    /** Per-pass outputs in original pass order, plus whether the deadline forced remaining passes to abort. */
+    private record Fanout<T>(List<T> results, boolean timedOut) {
+    }
+
+    /**
+     * Run {@code passCount} independent collector round-trips with bounded concurrency
+     * (Limits.FANOUT_CONCURRENCY) under a wall-clock deadline (Limits.FANOUT_DEADLINE_MS). Each pass
+     * gets its own pooled TcpProxy and streams into a thread-confined result via {@code work}. On
+     * deadline expiry, in-flight sockets are aborted to unblock their reads and the results gathered so
+     * far (in pass order) are returned with timedOut=true — a wide target degrades to a partial answer
+     * instead of blowing the MCP client timeout. A genuine error from any pass propagates (fail-fast).
+     */
+    private <T> Fanout<T> fanout(int passCount, BiFunction<TcpProxy, Integer, T> work) {
+        if (passCount <= 0) {
+            return new Fanout<>(List.of(), false);
+        }
+        long deadline = System.currentTimeMillis() + Limits.FANOUT_DEADLINE_MS;
+        int concurrency = Math.max(1, Math.min(passCount, Limits.FANOUT_CONCURRENCY));
+        ExecutorService exec = Executors.newFixedThreadPool(concurrency);
+        Set<TcpProxy> inFlight = ConcurrentHashMap.newKeySet();
+        Map<Integer, T> results = new ConcurrentHashMap<>();
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        AtomicBoolean aborted = new AtomicBoolean(false);
+        try {
+            for (int i = 0; i < passCount; i++) {
+                final int idx = i;
+                exec.submit(() -> {
+                    if (aborted.get() || failure.get() != null) {
+                        return;
+                    }
+                    TcpProxy tcp = TcpProxy.getTcpProxy(server);
+                    inFlight.add(tcp);
+                    try {
+                        T r = work.apply(tcp, idx);
+                        if (r != null) {
+                            results.put(idx, r);
+                        }
+                    } catch (RuntimeException e) {
+                        // A read interrupted by a deadline abort surfaces here too; only record genuine errors.
+                        if (!aborted.get()) {
+                            failure.compareAndSet(null, e);
+                        }
+                    } finally {
+                        inFlight.remove(tcp);
+                        TcpProxy.close(tcp);
+                    }
+                });
+            }
+            exec.shutdown();
+            long wait = Math.max(0, deadline - System.currentTimeMillis());
+            boolean finished = exec.awaitTermination(wait, TimeUnit.MILLISECONDS);
+            if (!finished) {
+                aborted.set(true);
+                for (TcpProxy t : inFlight) {
+                    t.abort(); // directly close the socket to unblock a read in progress
+                }
+                exec.awaitTermination(2, TimeUnit.SECONDS); // brief unwind grace
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            exec.shutdownNow();
+        }
+        RuntimeException f = failure.get();
+        if (f != null) {
+            throw f;
+        }
+        List<T> ordered = new ArrayList<>(results.size());
+        for (int i = 0; i < passCount; i++) {
+            T r = results.get(i);
+            if (r != null) {
+                ordered.add(r);
+            }
+        }
+        return new Fanout<>(ordered, aborted.get());
     }
 
     @Override
@@ -687,10 +797,25 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
+    /** Fold another pass's per-service accumulator into a merged one (used to combine parallel passes). */
+    private static void mergeAcc(ServiceAcc into, ServiceAcc from) {
+        into.count += from.count;
+        into.errorCount += from.errorCount;
+        into.sumElapsed += from.sumElapsed;
+        if (from.maxElapsed > into.maxElapsed) {
+            into.maxElapsed = from.maxElapsed;
+        }
+        if (into.anyYmd == 0) {
+            into.anyYmd = from.anyYmd;
+        }
+        into.elapseds.addAll(from.elapseds);
+    }
+
     private XlogSummaryResult getServiceSummaryImpl(SearchXlogParams params) {
         // Same SEARCH_XLOG_LIST stream as search_xlog, but rows are folded into per-service counters
         // instead of retained. This answers "which service got slow/errored" over a wide window while
-        // keeping the response to a few dozen lines. Scan cap is higher since no rows are held.
+        // keeping the response to a few dozen lines. Scan cap is higher since no rows are held. Passes
+        // fan out with bounded concurrency under the same deadline as search (see fanout).
         validateSearchWindow(params);
         String servicePattern = buildServicePattern(params.service());
         List<DaySplitter.Segment> segments =
@@ -699,94 +824,79 @@ public final class TcpScouterClient implements ScouterClient {
         Integer minElapsed = params.minElapsedMs();
         boolean onlyError = params.onlyError();
 
-        Map<Integer, ServiceAcc> byService = new HashMap<>();
-        int[] examined = {0};
-        boolean[] capped = {false};
+        List<Pass> passes = buildPasses(targetHashes, segments);
+        AtomicInteger examined = new AtomicInteger();
+        AtomicBoolean capped = new AtomicBoolean(false);
+        AtomicBoolean partial = new AtomicBoolean(false);
 
-        record Pass(Long hash, DaySplitter.Segment seg) {
-        }
-        List<Pass> passes = new ArrayList<>();
-        for (Long hash : targetHashes) {
-            for (DaySplitter.Segment seg : segments) {
-                passes.add(new Pass(hash, seg));
-            }
-        }
         ensurePassBudget(passes.size(), config.locale());
         long startedAt = System.currentTimeMillis();
-        for (Pass qp : passes) {
-            Long objHash = qp.hash();
-            DaySplitter.Segment seg = qp.seg();
-            MapPack param = new MapPack();
-            param.put(ParamConstant.DATE, scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone()));
-            param.put(ParamConstant.XLOG_START_TIME, seg.fromMillis());
-            param.put(ParamConstant.XLOG_END_TIME, seg.toMillis());
-            if (objHash != null) {
-                param.put(ParamConstant.OBJ_HASH, objHash);
-            }
-            if (servicePattern != null) {
-                param.put(ParamConstant.XLOG_SERVICE, servicePattern);
-            }
-            if (params.login() != null && !params.login().isBlank()) {
-                param.put(ParamConstant.XLOG_LOGIN, params.login().trim());
-            }
-            if (params.ip() != null && !params.ip().isBlank()) {
-                param.put(ParamConstant.XLOG_IP, params.ip().trim());
-            }
-            if (params.desc() != null && !params.desc().isBlank()) {
-                param.put(ParamConstant.XLOG_DESC, params.desc().trim());
-            }
 
-            TcpProxy tcp = TcpProxy.getTcpProxy(server);
+        Fanout<Map<Integer, ServiceAcc>> fo = fanout(passes.size(), (tcp, idx) -> {
+            Map<Integer, ServiceAcc> local = new HashMap<>();
+            if (capped.get()) {
+                return local; // the global scan cap was already reached by other passes
+            }
+            Pass qp = passes.get(idx);
+            MapPack param = buildXlogParam(qp.seg(), qp.hash(), servicePattern, params);
             try {
                 tcp.process(RequestCmd.SEARCH_XLOG_LIST, param, in -> {
                     Pack p = in.readPack();
-                    examined[0]++;
+                    int ex = examined.incrementAndGet();
                     if (p instanceof XLogPack xp) {
-                        boolean pass = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
-                        if (pass) {
+                        boolean keep = (minElapsed == null || xp.elapsed >= minElapsed) && (!onlyError || xp.error != 0);
+                        if (keep) {
                             long ymd = Long.parseLong(scouter.mcp.time.TimeRange.yyyymmdd(xp.endTime, config.zone()));
-                            byService.computeIfAbsent(xp.service, k -> new ServiceAcc())
+                            local.computeIfAbsent(xp.service, k -> new ServiceAcc())
                                     .add(xp.elapsed, xp.error != 0, ymd);
                         }
                     }
-                    if (examined[0] >= Limits.SUMMARY_SCAN_CAP) {
-                        capped[0] = true;
+                    if (ex >= Limits.SUMMARY_SCAN_CAP) {
+                        capped.set(true);
                         throw new StopStreaming();
                     }
                 });
             } catch (RuntimeException e) {
-                if (!isNormalStreamStop(e)) {
+                if (isNormalStreamStop(e)) {
+                    // EOF: no data for this objHash/day segment — routine when fanning out over instances.
+                } else if (isReadTimeout(e)) {
+                    // Instance too slow to stream within the read timeout; fold what it gave and flag partial.
+                    partial.set(true);
+                } else {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     if (cause instanceof McpError) {
                         throw (McpError) cause;
                     }
                     throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
                 }
-                // EOF: no data for this objHash/day segment — routine when fanning out over instances.
-            } finally {
-                TcpProxy.close(tcp);
             }
-            if (capped[0]) {
-                break;
-            }
+            return local;
+        });
+
+        boolean timedOut = fo.timedOut() || partial.get();
+        Map<Integer, ServiceAcc> byService = new HashMap<>();
+        for (Map<Integer, ServiceAcc> part : fo.results()) {
+            part.forEach((svc, acc) -> mergeAcc(byService.computeIfAbsent(svc, k -> new ServiceAcc()), acc));
         }
 
-        log.info("get_service_summary done: passes={}, examined={}, services={}, capped={}, tookMs={}",
-                passes.size(), examined[0], byService.size(), capped[0], System.currentTimeMillis() - startedAt);
+        log.info("get_service_summary done: passes={}, examined={}, services={}, capped={}, timedOut={}, tookMs={}",
+                passes.size(), examined.get(), byService.size(), capped.get(), timedOut,
+                System.currentTimeMillis() - startedAt);
 
         boolean looksLikeApp = false;
         List<String> candidates = List.of();
-        if (byService.isEmpty() && params.service() != null && !params.service().isBlank()) {
+        if (byService.isEmpty() && !timedOut && params.service() != null && !params.service().isBlank()) {
             looksLikeApp = serviceFilterLooksLikeApp(params.service());
             if (!looksLikeApp) {
                 candidates = discoverServiceCandidates(params, targetHashes);
             }
         }
-        return buildSummary(byService, examined[0], capped[0], looksLikeApp, candidates);
+        return buildSummary(byService, examined.get(), capped.get(), looksLikeApp, candidates, timedOut);
     }
 
     private XlogSummaryResult buildSummary(Map<Integer, ServiceAcc> byService, int examined, boolean capped,
-                                           boolean serviceLooksLikeApp, List<String> serviceCandidates) {
+                                           boolean serviceLooksLikeApp, List<String> serviceCandidates,
+                                           boolean timedOut) {
         // Decode service names in one GET_TEXT_PACK batch per day (objName is not needed here).
         TextDictionary dict = new TextDictionary(server, null);
         Map<Long, Set<Integer>> byYmd = new HashMap<>();
@@ -811,7 +921,8 @@ public final class TcpScouterClient implements ScouterClient {
         if (list.size() > Limits.SUMMARY_MAX_SERVICES) {
             list = new ArrayList<>(list.subList(0, Limits.SUMMARY_MAX_SERVICES));
         }
-        return new XlogSummaryResult(list, totalCount, capped, examined, serviceLooksLikeApp, serviceCandidates);
+        return new XlogSummaryResult(list, totalCount, capped, examined, serviceLooksLikeApp, serviceCandidates,
+                timedOut);
     }
 
     /**
@@ -1305,52 +1416,94 @@ public final class TcpScouterClient implements ScouterClient {
             throw McpError.of(McpError.Code.INVALID_INPUT,
                     Messages.get(config.locale(), "error.summary_window_too_long", Limits.DAILY_STAT_MAX_DAYS));
         }
-        // Target: explicit objHash > fuzzy objNameLike (per-instance fan-out) > objType (server-side) > all.
-        List<Integer> hashes = new ArrayList<>();
+        // Target: explicit objHash > fuzzy objNameLike > objType (server-side) > all.
+        // objNameLike normally fans out per instance, but for a daily summary that is ruinous on a wide or
+        // past-date window (it resolves to every rotated pod). When the app owns its objType (one type,
+        // no members outside the match — true in this deployment), aggregate the WHOLE app in ONE
+        // server-side pass by objType instead: far faster and complete (covers rotated pods, not capped).
+        String effectiveObjType = objType;
+        List<Long> hashes = new ArrayList<>();
         if (objHash != null && objHash != 0L) {
-            hashes.add(objHash.intValue());
+            hashes.add(objHash);
         } else if (objNameLike != null && !objNameLike.isBlank()) {
-            for (SObjectDto o : resolveAliveTargets(objNameLike, null, Limits.SEARCH_MAX_OBJ)) {
-                hashes.add(o.objHash());
+            List<SObjectDto> all = listObjectsImpl();
+            List<SObjectDto> matched = TargetResolver.match(all, objNameLike);
+            if (matched.isEmpty()) {
+                throw McpError.of(McpError.Code.NOT_FOUND,
+                                Messages.get(config.locale(), "error.target_not_found", objNameLike.trim()))
+                        .withHint("candidates", String.join(", ", TargetResolver.suggest(all, 10)));
+            }
+            String soleType = (objType == null || objType.isBlank())
+                    ? TargetResolver.soleExclusiveObjType(all, matched) : null;
+            if (soleType != null) {
+                effectiveObjType = soleType; // single server-side aggregation, no fan-out
+                hashes.add(0L);
+            } else {
+                for (SObjectDto o : matched.size() > Limits.SEARCH_MAX_OBJ
+                        ? matched.subList(0, Limits.SEARCH_MAX_OBJ) : matched) {
+                    hashes.add((long) o.objHash());
+                }
             }
         } else {
-            hashes.add(0); // 0 = no objHash restriction (whole objType / whole collector)
+            hashes.add(0L); // 0 = no objHash restriction (whole objType / whole collector)
         }
-        ensurePassBudget(hashes.size() * segments.size(), config.locale());
+        final String queryObjType = effectiveObjType;
+        List<Pass> passes = buildPasses(hashes, segments);
+        ensurePassBudget(passes.size(), config.locale());
         long startedAt = System.currentTimeMillis();
 
-        Map<String, SumAcc> acc = new LinkedHashMap<>();
-        for (Integer h : hashes) {
-            for (DaySplitter.Segment seg : segments) {
-                MapPack param = new MapPack();
-                String ymd = scouter.mcp.time.TimeRange.yyyymmdd(seg.fromMillis(), config.zone());
-                param.put(ParamConstant.DATE, ymd);
-                param.put(ParamConstant.STIME, seg.fromMillis());
-                param.put(ParamConstant.ETIME, seg.toMillis());
-                if (objType != null && !objType.isBlank()) {
-                    param.put(ParamConstant.OBJ_TYPE, objType.trim());
+        // Each daily-summary pass is one small pre-aggregated read, but a fuzzy objNameLike still fans
+        // out over many instances; run them with the same bounded concurrency/deadline as the XLog tools
+        // so a wide target degrades to a partial aggregate instead of exceeding the client timeout.
+        AtomicBoolean partial = new AtomicBoolean(false);
+        Fanout<SummaryPass> fo = fanout(passes.size(), (tcp, idx) -> {
+            Pass qp = passes.get(idx);
+            String ymd = scouter.mcp.time.TimeRange.yyyymmdd(qp.seg().fromMillis(), config.zone());
+            MapPack param = new MapPack();
+            param.put(ParamConstant.DATE, ymd);
+            param.put(ParamConstant.STIME, qp.seg().fromMillis());
+            param.put(ParamConstant.ETIME, qp.seg().toMillis());
+            if (queryObjType != null && !queryObjType.isBlank()) {
+                param.put(ParamConstant.OBJ_TYPE, queryObjType.trim());
+            }
+            param.put(ParamConstant.OBJ_HASH, qp.hash().intValue());
+            try {
+                Pack p = tcp.getSingle(cmd, param);
+                if (p instanceof MapPack mp) {
+                    return new SummaryPass(mp, Long.parseLong(ymd));
                 }
-                param.put(ParamConstant.OBJ_HASH, h);
-                TcpProxy tcp = TcpProxy.getTcpProxy(server);
-                try {
-                    Pack p = tcp.getSingle(cmd, param);
-                    if (p instanceof MapPack mp) {
-                        mergeSummaryDay(category, mp, Long.parseLong(ymd), acc);
-                    }
-                } catch (Exception e) {
-                    if (!isEof(e)) {
-                        throw McpError.of(McpError.Code.INTERNAL, String.valueOf(e.getMessage()));
-                    }
+            } catch (RuntimeException e) {
+                if (isEof(e)) {
                     // EOF: no summary data for this day/target - routine.
-                } finally {
-                    TcpProxy.close(tcp);
+                } else if (isReadTimeout(e)) {
+                    partial.set(true);
+                } else {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    if (cause instanceof McpError) {
+                        throw (McpError) cause;
+                    }
+                    throw McpError.of(McpError.Code.INTERNAL, String.valueOf(cause.getMessage()));
                 }
             }
+            return null;
+        });
+
+        // Fold day MapPacks single-threaded (mergeSummaryDay stays the one authoritative fold path).
+        Map<String, SumAcc> acc = new LinkedHashMap<>();
+        for (SummaryPass sp : fo.results()) {
+            if (sp != null) {
+                mergeSummaryDay(category, sp.mp(), sp.ymd(), acc);
+            }
         }
-        SummaryResult result = buildSummaryResult(category, acc);
-        log.info("get_summary done: category={}, passes={}, rows={}, tookMs={}",
-                category, hashes.size() * segments.size(), acc.size(), System.currentTimeMillis() - startedAt);
+        boolean timedOut = fo.timedOut() || partial.get();
+        SummaryResult result = buildSummaryResult(category, acc, timedOut);
+        log.info("get_summary done: category={}, passes={}, rows={}, timedOut={}, tookMs={}",
+                category, passes.size(), acc.size(), timedOut, System.currentTimeMillis() - startedAt);
         return result;
+    }
+
+    /** One day's raw pre-aggregated summary MapPack from a single pass, tagged with its date. */
+    private record SummaryPass(MapPack mp, long ymd) {
     }
 
     /**
@@ -1402,7 +1555,7 @@ public final class TcpScouterClient implements ScouterClient {
         }
     }
 
-    private SummaryResult buildSummaryResult(String category, Map<String, SumAcc> acc) {
+    private SummaryResult buildSummaryResult(String category, Map<String, SumAcc> acc, boolean timedOut) {
         // Sort by count desc, cap rows, then batch-resolve hashes to text (one GET_TEXT_PACK per day).
         List<Map.Entry<String, SumAcc>> entries = new ArrayList<>(acc.entrySet());
         entries.sort((a, b) -> Long.compare(b.getValue().count, a.getValue().count));
@@ -1498,7 +1651,7 @@ public final class TcpScouterClient implements ScouterClient {
             default -> {
             }
         }
-        return new SummaryResult(category, entries.size(), truncated, rows, errorRows, alertRows);
+        return new SummaryResult(category, entries.size(), truncated, rows, errorRows, alertRows, timedOut);
     }
 
     private static String textOrNull(MapPack mp, String key) {
@@ -1523,6 +1676,22 @@ public final class TcpScouterClient implements ScouterClient {
     private static boolean isEof(Throwable t) {
         for (Throwable c = t; c != null; c = c.getCause()) {
             if (c instanceof java.io.EOFException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    // A socket read timeout during streaming means the collector accepted the request but is too slow
+    // to produce (more) data for THIS instance/window - on production the per-request time-to-first-byte
+    // of a wide XLog scan can exceed the read timeout. In a fan-out this must abandon only that pass and
+    // yield a partial result, never fail the whole call (distinct from a dead-socket EOF or a real error).
+    private static boolean isReadTimeout(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.net.SocketTimeoutException) {
                 return true;
             }
             if (c.getCause() == c) {

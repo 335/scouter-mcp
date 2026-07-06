@@ -77,7 +77,7 @@ class ToolsContractTest {
         // (=request URL) filter -> 0 rows. The result flags it and the hint must steer to objNameLike.
         ScouterClient client = mock(ScouterClient.class);
         when(client.searchXlog(any())).thenReturn(
-                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, true, List.of()));
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, true, List.of(), false));
 
         String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
                 new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, "shop-order-api",
@@ -93,7 +93,7 @@ class ToolsContractTest {
         ScouterClient client = mock(ScouterClient.class);
         when(client.searchXlog(any())).thenReturn(
                 new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, false,
-                        List.of("/api/order/order-detail<GET>", "/api/order/order-detail<POST>")));
+                        List.of("/api/order/order-detail<GET>", "/api/order/order-detail<POST>"), false));
 
         String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
                 new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, "orderdetail",
@@ -109,7 +109,7 @@ class ToolsContractTest {
         ScouterClient client = mock(ScouterClient.class);
         XlogSummaryResult res = new XlogSummaryResult(
                 List.of(new ServiceSummaryDto("/api/order", 120, 3, 0.025d, 42.5d, 900, 780)),
-                120, true, 200_000, false, List.of());
+                120, true, 200_000, false, List.of(), false);
         when(client.getServiceSummary(any())).thenReturn(res);
 
         String json = Tools.renderServiceSummary(Locale.ENGLISH, client,
@@ -119,6 +119,52 @@ class ToolsContractTest {
         assertThat(json).contains("\"p95Ms\":780");
         assertThat(json).contains("\"scanCapReached\":true");
         assertThat(json).contains("hint"); // scan cap reached -> narrowing hint
+    }
+
+    @Test
+    void serviceSummaryTimedOutWithServiceFilterSteersToGetSummaryFirst() {
+        ScouterClient client = mock(ScouterClient.class);
+        XlogSummaryResult res = new XlogSummaryResult(
+                List.of(), 0, false, 3018, false, List.of(), true); // timedOut
+        when(client.getServiceSummary(any())).thenReturn(res);
+
+        String json = Tools.renderServiceSummary(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, "grm-biz-member",
+                        "checkOrdCnfCustEastnAddr", null, null, null, null, false, 0));
+
+        assertThat(json).contains("\"timedOut\":true");
+        // service filter + timeout -> steer to the cheap get_summary-first procedure
+        assertThat(json).contains("get_summary");
+    }
+
+    @Test
+    void searchXlogEmptyWithServiceFilterAndNoCandidatesSteersToGetSummaryOrConfirm() {
+        ScouterClient client = mock(ScouterClient.class);
+        // empty, not-an-app, no candidates found -> likely not a real service name
+        when(client.searchXlog(any())).thenReturn(
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 0, false, List.of(), false));
+
+        String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, "grm-biz-member",
+                        "checkOrdCnfCustEastnAddr", null, null, null, null, false, 20));
+
+        // should steer to get_summary validation / user confirmation, not a blind widen
+        assertThat(json).contains("get_summary");
+    }
+
+    @Test
+    void searchXlogTimedOutWithoutServiceFilterUsesGenericDeadlineHint() {
+        ScouterClient client = mock(ScouterClient.class);
+        when(client.searchXlog(any())).thenReturn(
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), true, false, 100, false, List.of(), true));
+
+        String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
+                new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, "grm-biz-member",
+                        null, null, null, null, null, false, 20));
+
+        assertThat(json).contains("\"timedOut\":true");
+        // no service filter -> generic deadline hint, not the service-scan procedure
+        assertThat(json).doesNotContain("get_summary");
     }
 
     @Test
@@ -214,7 +260,7 @@ class ToolsContractTest {
                 new scouter.mcp.scouter.dto.SummaryResult("sql", 2, false,
                         List.of(new scouter.mcp.scouter.dto.SummaryRowDto("SELECT * FROM t", 100, 1L, 5000L, 50.0),
                                 new scouter.mcp.scouter.dto.SummaryRowDto("UPDATE t SET x=1", 10, 0L, 100L, 10.0)),
-                        null, null));
+                        null, null, false));
 
         String json = Tools.renderSummary(Locale.ENGLISH, client, "sql", 0, 1000, null, null, "app");
 
@@ -226,7 +272,7 @@ class ToolsContractTest {
     void summaryEmptyGetsHint() {
         ScouterClient client = mock(ScouterClient.class);
         when(client.getSummary(eq("error"), anyLong(), anyLong(), isNull(), isNull(), isNull())).thenReturn(
-                new scouter.mcp.scouter.dto.SummaryResult("error", 0, false, null, List.of(), null));
+                new scouter.mcp.scouter.dto.SummaryResult("error", 0, false, null, List.of(), null, false));
 
         String json = Tools.renderSummary(Locale.ENGLISH, client, "error", 0, 1000, null, null, null);
 
@@ -254,7 +300,7 @@ class ToolsContractTest {
         // scanned rows are discarded the hint must steer to server-side filters / summary tools.
         ScouterClient client = mock(ScouterClient.class);
         when(client.searchXlog(any())).thenReturn(
-                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 5000, false, List.of()));
+                new scouter.mcp.scouter.dto.XlogSearchResult(List.of(), false, false, 5000, false, List.of(), false));
 
         String json = Tools.renderSearchXlog(Locale.ENGLISH, client,
                 new scouter.mcp.scouter.dto.SearchXlogParams(1000L, 2000L, null, null, null,

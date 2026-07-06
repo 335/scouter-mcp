@@ -29,8 +29,25 @@ import java.util.List;
 @Slf4j
 public class ConnectionPool {
 	private int poolSize;
+	// Stale-eviction threshold. Defaults to the ported constant; LoginMgr tightens it to sit below the
+	// collector's idle socket close (derived from so_time_out) so we never reuse a dropped socket.
+	private volatile int staleTimeoutMs = ClientConfig.NET_WEBAPP_TCP_CLIENT_POOL_TIMEOUT_MS;
+
 	public ConnectionPool(int size) {
 		this.poolSize = size;
+	}
+
+	public void setStaleTimeoutMs(int staleTimeoutMs) {
+		this.staleTimeoutMs = staleTimeoutMs;
+	}
+
+	int staleTimeoutMs() {
+		return staleTimeoutMs;
+	}
+
+	/** True when a connection last used at {@code lastUsed} is too old to safely reuse at {@code now}. */
+	boolean isStale(long lastUsed, long now) {
+		return lastUsed < (now - (staleTimeoutMs - 1));
 	}
 
 	private LinkedList<TcpProxy> pool = new LinkedList<TcpProxy>();
@@ -44,14 +61,14 @@ public class ConnectionPool {
 			} else {
 				//try just one more
 				proxy = pool.removeFirst();
-				if (proxy.getLastUsed() < (System.currentTimeMillis() - (ClientConfig.NET_WEBAPP_TCP_CLIENT_POOL_TIMEOUT_MS - 1))) {
+				if (isStale(proxy.getLastUsed(), System.currentTimeMillis())) {
 					proxyToClose = new ArrayList<>();
 					proxyToClose.add(proxy);
 					proxy = null;
 
 					if(pool.size() != 0) {
 						proxy = pool.removeFirst();
-						if (proxy.getLastUsed() < (System.currentTimeMillis() - (ClientConfig.NET_WEBAPP_TCP_CLIENT_POOL_TIMEOUT_MS - 1))) {
+						if (isStale(proxy.getLastUsed(), System.currentTimeMillis())) {
 							proxyToClose.add(proxy);
 							proxy = null;
 						}

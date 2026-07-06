@@ -198,6 +198,20 @@ public class TcpProxy implements AutoCloseable {
         }
     }
 
+    /**
+     * Close the underlying socket directly to unblock a read in progress on ANOTHER thread. Unlike
+     * close()/realClose() this does not synchronize on the proxy, so it can interrupt a worker thread
+     * currently blocked inside the synchronized process() read loop (used to enforce a fan-out deadline).
+     * The interrupted read surfaces as a SocketException the caller treats as a normal early stop.
+     */
+    public void abort() {
+        try {
+            tcp.close();
+        } catch (Throwable ignore) {
+            // Best-effort: the goal is only to unblock the read; the worker's finally-block cleans up.
+        }
+    }
+
     public synchronized void sendClose() {
         if (tcp.connected() == false) {
             return;

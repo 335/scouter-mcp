@@ -71,6 +71,19 @@ public final class Limits {
      * or instance caps ever widen.
      */
     public static final int MAX_QUERY_PASSES = 40;
+    /**
+     * Max concurrent collector round-trips when a query fans out over instances/day-segments. Sequential
+     * passes made a fuzzy objNameLike target (many pods) exceed the MCP client's request timeout; running
+     * a bounded number in parallel keeps wall-clock near a single pass. Kept below the connection pool
+     * size (NET_TCP_CLIENT_POOL_SIZE=12) so every worker gets a socket without contention.
+     */
+    public static final int FANOUT_CONCURRENCY = 6;
+    /**
+     * Wall-clock budget for a fan-out streaming tool (search_xlog / get_service_summary). On expiry the
+     * remaining passes are abandoned and whatever was gathered is returned with timedOut=true, so a wide
+     * target degrades to a partial answer instead of failing the whole call at the client timeout.
+     */
+    public static final long FANOUT_DEADLINE_MS = 45_000L;
 
     // --- list_threads ---
     /** Max alive instances a fuzzy target may fan out to (a JVM can hold hundreds of threads each). */

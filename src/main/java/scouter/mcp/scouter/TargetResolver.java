@@ -26,14 +26,25 @@ public final class TargetResolver {
         }
         String q = query.trim().toLowerCase();
         List<SObjectDto> direct = new ArrayList<>();
+        List<SObjectDto> exactApp = new ArrayList<>();
         for (SObjectDto o : objects) {
             String name = o.objName() == null ? "" : o.objName().toLowerCase();
             String type = o.objType() == null ? "" : o.objType().toLowerCase();
             if (name.contains(q) || type.equals(q)) {
                 direct.add(o);
+                // Exact-app precedence: when the query is a full app name, a shorter name that is a
+                // substring of a longer sibling ("grm-biz-member" vs "grm-biz-membership") would
+                // otherwise pull in the sibling's pods and inflate the fan-out. Prefer instances whose
+                // derived app label equals the query exactly.
+                String app = AppLabel.of(o.objName()).app();
+                if (app != null && app.equalsIgnoreCase(q)) {
+                    exactApp.add(o);
+                }
             }
         }
-        List<SObjectDto> found = direct;
+        // Only narrow to exact-app matches when they don't cover the whole substring set anyway; a
+        // partial query ("grm-biz") matches nobody's exact app and must stay broad.
+        List<SObjectDto> found = !exactApp.isEmpty() && exactApp.size() < direct.size() ? exactApp : direct;
         if (found.isEmpty()) {
             // Token fallback: every token must appear somewhere in the objName ("order shop" etc.).
             String[] tokens = q.split("\\s+");
@@ -80,6 +91,42 @@ public final class TargetResolver {
             }
         }
         return out;
+    }
+
+    /**
+     * When a fuzzy target resolves to instances that ALL share one objType AND no object of that type
+     * lies outside the match, returns that objType; otherwise null. In this deployment each app has its
+     * own objType, so this lets a daily-summary query aggregate the whole app in ONE server-side pass
+     * (objType) instead of fanning out per instance — far faster and complete (covers rotated pods),
+     * which matters for wide or past-date windows. Returns null when the objType is shared across apps
+     * (e.g. a generic "tomcat"), where collapsing would over-aggregate, so the caller must fan out.
+     */
+    public static String soleExclusiveObjType(List<SObjectDto> all, List<SObjectDto> matched) {
+        if (matched == null || matched.isEmpty()) {
+            return null;
+        }
+        String type = null;
+        Set<Integer> matchedHashes = new java.util.HashSet<>();
+        for (SObjectDto o : matched) {
+            String ot = o.objType();
+            if (ot == null || ot.isBlank()) {
+                return null;
+            }
+            if (type == null) {
+                type = ot;
+            } else if (!type.equals(ot)) {
+                return null; // spans multiple objTypes
+            }
+            matchedHashes.add(o.objHash());
+        }
+        if (all != null) {
+            for (SObjectDto o : all) {
+                if (type.equals(o.objType()) && !matchedHashes.contains(o.objHash())) {
+                    return null; // objType has members outside the match -> shared type, not app-exclusive
+                }
+            }
+        }
+        return type;
     }
 
     /** Distinct objNames (bounded) for a "did you mean" hint when nothing matched. */

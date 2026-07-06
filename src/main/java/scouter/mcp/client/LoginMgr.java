@@ -77,7 +77,12 @@ public class LoginMgr{
 				server.setRecommendedClientVersion(recommendedClientVersion);
 				server.setEmail(email);
 				server.setTimezone(timezone);
-				server.setSoTimeOut(soTimeOut);
+				// The collector's advertised so_time_out (~8s) is too short for our wide/sparse scans and,
+				// paired with the 15s pool-stale default, let us reuse sockets the collector had already
+				// idle-closed (EOFException). Raise the socket read timeout to a scan-safe floor and tighten
+				// pool eviction to sit below the collector's idle-close. See ClientConfig.
+				server.setSoTimeOut(ClientConfig.effectiveReadTimeoutMs(soTimeOut));
+				server.getConnectionPool().setStaleTimeoutMs(ClientConfig.poolStaleTimeoutMs(soTimeOut));
 				Value value = out.get("policy");
 				if (value != null) {
 					MapValue mv = (MapValue) value;
